@@ -1,0 +1,117 @@
+import os
+from datetime import date
+import aiohttp
+
+TMDB_BASE = "https://api.themoviedb.org/3"
+TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
+LANGUAGE = "uk-UA"
+
+
+def _headers() -> dict:
+    return {
+        "Authorization": f"Bearer {os.getenv('TMDB_API_TOKEN')}",
+        "accept": "application/json",
+    }
+
+
+def poster_url(path: str | None) -> str | None:
+    return f"{TMDB_IMAGE_BASE}{path}" if path else None
+
+
+async def search_series(query: str) -> list[dict]:
+    """Search TV series by name. Returns up to 10 results."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{TMDB_BASE}/search/tv",
+            headers=_headers(),
+            params={"query": query, "language": LANGUAGE, "page": 1},
+        ) as r:
+            if r.status != 200:
+                return []
+            data = await r.json()
+            return data.get("results", [])[:10]
+
+
+async def get_series(series_id: int) -> dict:
+    """Get full series details including seasons list."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{TMDB_BASE}/tv/{series_id}",
+            headers=_headers(),
+            params={"language": LANGUAGE},
+        ) as r:
+            data = await r.json()
+            if r.status != 200:
+                if isinstance(data, dict):
+                    return {**data, "success": False}
+                return {"success": False}
+            return data
+
+
+async def get_season(series_id: int, season_number: int) -> dict:
+    """Get season details with all episodes."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{TMDB_BASE}/tv/{series_id}/season/{season_number}",
+            headers=_headers(),
+            params={"language": LANGUAGE},
+        ) as r:
+            data = await r.json()
+            if r.status != 200:
+                if isinstance(data, dict):
+                    return {**data, "success": False}
+                return {"success": False}
+            return data
+
+
+async def count_aired_episodes(series_id: int, season_number: int) -> int:
+    """Count episodes that have already aired (air_date <= today)."""
+    season = await get_season(series_id, season_number)
+    today = date.today().isoformat()
+    episodes = season.get("episodes", [])
+    return sum(
+        1 for ep in episodes
+        if ep.get("air_date") and ep["air_date"] <= today
+    )
+
+
+def format_series_info(data: dict) -> str:
+    """Format series info as HTML caption."""
+    name = data.get("name", "Невідомо")
+    original = data.get("original_name", "")
+    year = (data.get("first_air_date") or "")[:4]
+    status_map = {
+        "Returning Series": "🔄 Виходить",
+        "Ended": "✅ Завершено",
+        "Canceled": "❌ Скасовано",
+        "In Production": "🎬 У виробництві",
+    }
+    status = status_map.get(data.get("status", ""), data.get("status", ""))
+    raw_rating = data.get("vote_average")
+    try:
+        rating = float(raw_rating) if raw_rating is not None else 0.0
+    except (TypeError, ValueError):
+        rating = 0.0
+    seasons = data.get("number_of_seasons", 0)
+    episodes = data.get("number_of_episodes", 0)
+    overview = data.get("overview") or "Опис відсутній."
+    if len(overview) > 600:
+        overview = overview[:600] + "…"
+
+    genres = ", ".join(
+        g.get("name", "") for g in data.get("genres", [])[:3] if g.get("name")
+    )
+
+    lines = [
+        f"<b>{name}</b>",
+        f"<i>{original}</i>" if original and original != name else "",
+        f"📅 {year}  •  ⭐ {rating:.1f}  •  {status}",
+        f"🎭 {genres}" if genres else "",
+        f"📺 {seasons} сез. / {episodes} еп.",
+        "",
+        overview,
+    ]
+    return "\n".join(
+        l for i, l in enumerate(lines)
+        if l is not None and (l != "" or i > 2)
+    )
