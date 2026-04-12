@@ -293,9 +293,13 @@ async def cmd_list(message: Message):
     items = await db.get_watchlist(message.from_user.id)
 
     if not items:
+        me = await bot.get_me()
+        un = me.username or "reeltrack_bot"
         await message.answer(
             "📋 Ваш список порожній.\n\n"
-            "Щоб знайти серіал, введіть <code>@bot Назва</code> у рядку повідомлення.",
+            "Щоб шукати серіал: у <b>рядку введення</b> (не надсилаючи звичайне повідомлення) набери "
+            f"<code>@{un} назва</code> — з’явиться список із постерами. Обери рядок зверху.\n\n"
+            "Якщо списку немає: у @BotFather для бота ввімкни Inline mode (<code>/setinline</code>).",
             parse_mode="HTML",
         )
         return
