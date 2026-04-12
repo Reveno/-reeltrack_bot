@@ -4,10 +4,22 @@ import asyncpg
 _pool: asyncpg.Pool | None = None
 
 
+def database_dsn() -> str:
+    """Railway: краще DATABASE_URL (приватне). Якщо додано лише публічне — DATABASE_PUBLIC_URL."""
+    for key in ("DATABASE_URL", "DATABASE_PUBLIC_URL"):
+        v = (os.getenv(key) or "").strip()
+        if v:
+            return v
+    return ""
+
+
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(os.getenv("DATABASE_URL"), min_size=1, max_size=5)
+        dsn = database_dsn()
+        if not dsn:
+            raise RuntimeError("DATABASE_URL або DATABASE_PUBLIC_URL не задано")
+        _pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
     return _pool
 
 

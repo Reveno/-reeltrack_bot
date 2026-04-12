@@ -394,20 +394,24 @@ async def check_new_episodes():
 _ENV_HINTS = {
     "BOT_TOKEN": "Railway → сервіс з bot.py → Variables → BOT_TOKEN.",
     "TMDB_API_TOKEN": "Railway → той самий сервіс → Variables → TMDB_API_TOKEN (Read Access Token v4).",
-    "DATABASE_URL": (
-        "Додай PostgreSQL у проєкт (New → Database → PostgreSQL). Потім у сервісі бота: "
-        "Variables → + New variable → Variable Reference → обери Postgres → DATABASE_URL. "
-        "Без цього бот не бачить рядок підключення."
-    ),
 }
+
+_DB_HINT = (
+    "Додай PostgreSQL у проєкт. У сервісі бота: Variables → + New variable → Variable Reference → "
+    "Postgres → обери **DATABASE_URL** (внутрішнє підключення, без egress). "
+    "Якщо вже є лише DATABASE_PUBLIC_URL — бот теж підхопить його."
+)
 
 
 async def main():
-    for var in ("BOT_TOKEN", "TMDB_API_TOKEN", "DATABASE_URL"):
+    for var in ("BOT_TOKEN", "TMDB_API_TOKEN"):
         if not (os.getenv(var) or "").strip():
             raise RuntimeError(
                 f"Відсутня змінна середовища: {var}. {_ENV_HINTS[var]}"
             )
+
+    if not db.database_dsn():
+        raise RuntimeError(f"Відсутній DATABASE_URL (або DATABASE_PUBLIC_URL). {_DB_HINT}")
 
     await db.init_db()
     log.info("Database initialized.")
