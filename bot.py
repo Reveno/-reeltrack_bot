@@ -37,7 +37,14 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-bot = Bot(token=os.getenv("BOT_TOKEN"))
+_bot_token = (os.getenv("BOT_TOKEN") or "").strip()
+if not _bot_token:
+    raise RuntimeError(
+        "BOT_TOKEN не задано (os.getenv повернув порожньо). "
+        "Railway: відкрий сервіс, де запускається бот (не Postgres) → Variables → "
+        "додай BOT_TOKEN = токен від @BotFather. Назва змінної саме BOT_TOKEN, без лапок у значенні."
+    )
+bot = Bot(token=_bot_token)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
