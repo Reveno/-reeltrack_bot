@@ -1,10 +1,11 @@
 """
 Series Tracker Bot
 ──────────────────
-Autocomplete series search via InlineQuery → TMDB poster + info →
-season picker → daily episode notifications.
+Меню (ReplyKeyboard) → пошук текстом у чаті → TMDB → сезони → сповіщення про нові епізоди.
+Опційно: інлайн-пошук @username у будь-якому чаті.
 
-Requires env vars: BOT_TOKEN, TMDB_API_TOKEN, DATABASE_URL
+Requires env vars: BOT_TOKEN, TMDB_API_TOKEN, DATABASE_URL (або DATABASE_PUBLIC_URL)
+Optional: CHECK_INTERVAL_MINUTES (за замовчуванням 15)
 """
 
 import asyncio
@@ -12,17 +13,20 @@ import logging
 import os
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup, default_state
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message,
     CallbackQuery,
     InlineQuery,
     InlineQueryResultPhoto,
     InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    BufferedInputFile,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
@@ -45,20 +49,38 @@ if not _bot_token:
         "додай BOT_TOKEN = токен від @BotFather. Назва змінної саме BOT_TOKEN, без лапок у значенні."
     )
 bot = Bot(token=_bot_token)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 
+CHECK_INTERVAL_MINUTES = max(5, int(os.getenv("CHECK_INTERVAL_MINUTES") or "15"))
+
 PLACEHOLDER_POSTER = "https://placehold.co/500x750/1a1a2e/ffffff?text=No+Poster"
+
+# Кнопки головного меню (текст має збігатися з F.text)
+BTN_SEARCH = "🔍 Пошук серіалу"
+BTN_LIST = "📋 Мій список"
+BTN_HELP = "❓ Допомога"
+
+
+class SearchStates(StatesGroup):
+    waiting_query = State()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Keyboards
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def main_reply_keyboard() -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text=BTN_SEARCH), KeyboardButton(text=BTN_LIST))
+    builder.row(KeyboardButton(text=BTN_HELP))
+    return builder.as_markup(resize_keyboard=True)
+
+
 def kb_series_actions(series_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="📺 Стежити за серіалом", callback_data=f"track:{series_id}")
-    builder.button(text="🔍 Шукати ще", switch_inline_query_current_chat="")
+    builder.button(text="🔍 Інший серіал", callback_data="search:new")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -69,7 +91,7 @@ def kb_seasons(series_id: int, seasons: list[dict]) -> InlineKeyboardMarkup:
         n = s["season_number"]
         ep = s.get("episode_count", "?")
         if n == 0:
-            continue  # skip specials
+            continue
         builder.button(
             text=f"Сезон {n}  ({ep} еп.)",
             callback_data=f"season:{series_id}:{n}",
@@ -90,12 +112,60 @@ def kb_my_list(items) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def kb_pick_search_result(results: list[dict]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for s in results[:10]:
+        sid = s["id"]
+        name = s.get("name") or s.get("original_name") or "Без назви"
+        year = (s.get("first_air_date") or "")[:4]
+        label = f"{name}" + (f" ({year})" if year else "")
+        if len(label) > 60:
+            label = label[:57] + "…"
+        builder.button(text=label, callback_data=f"open:{sid}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-#  /start  /help
+#  Допоміжні функції
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def send_watchlist_view(message: Message):
+    items = await db.get_watchlist(message.from_user.id)
+
+    if not items:
+        await message.answer(
+            "📋 <b>Ваш список порожній.</b>\n\n"
+            f"Натисніть «{BTN_SEARCH}» і введіть назву серіалу.",
+            parse_mode="HTML",
+            reply_markup=main_reply_keyboard(),
+        )
+        return
+
+    text = "📋 <b>Ваші серіали:</b>\n\n"
+    for item in items:
+        ep_info = f"Останнє відоме вийшло: {item['last_notified_episode']} еп."
+        text += (
+            f"▪️ <b>{item['series_name']}</b> — Сезон {item['season_number']}\n"
+            f"   <i>{ep_info}</i>\n"
+        )
+
+    text += "\nНатисніть кнопку нижче, щоб видалити зі списку:"
+
+    await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=kb_my_list(items),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  /start  /help  /cancel
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dp.message(CommandStart())
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
     await db.upsert_user(
         message.from_user.id,
         message.from_user.username,
@@ -103,33 +173,131 @@ async def cmd_start(message: Message):
     )
     await message.answer(
         "👋 <b>Привіт! Я бот для відстеження серіалів.</b>\n\n"
-        "🔍 <b>Як шукати серіали:</b>\n"
-        "Введіть <code>@" + (await bot.get_me()).username + " Назва серіалу</code> "
-        "в будь-якому чаті — з'явиться список із постерами.\n\n"
-        "📋 <b>Команди:</b>\n"
-        "/list — мій список відстеження\n"
-        "/help — допомога\n\n"
-        "Коли вийде новий епізод — я повідомлю! 🔔",
+        f"Користуйся кнопками внизу:\n"
+        f"• <b>{BTN_SEARCH}</b> — знайти серіал у TMDB\n"
+        f"• <b>{BTN_LIST}</b> — що ти відстежуєш\n"
+        f"• <b>{BTN_HELP}</b> — коротка інструкція\n\n"
+        "Про нові епізоди напишу, коли TMDB оновить дані (перевірка кожні "
+        f"<b>{CHECK_INTERVAL_MINUTES}</b> хв).",
         parse_mode="HTML",
+        reply_markup=main_reply_keyboard(),
     )
 
 
 @dp.message(Command("help"))
-async def cmd_help(message: Message):
-    bot_info = await bot.get_me()
+@dp.message(F.text == BTN_HELP)
+async def cmd_help(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(
-        "📖 <b>Як користуватися ботом</b>\n\n"
-        f"1️⃣ Введіть <code>@{bot_info.username} Назва</code> в цьому або будь-якому іншому чаті\n"
-        "2️⃣ Виберіть серіал зі списку → побачите постер і опис\n"
-        "3️⃣ Натисніть «Стежити» → виберіть сезон\n"
-        "4️⃣ Щодня о 10:00 бот перевіряє нові епізоди і надсилає сповіщення\n\n"
-        "📋 /list — переглянути та видалити серіали зі списку",
+        "📖 <b>Як користуватися</b>\n\n"
+        f"1️⃣ Натисни «{BTN_SEARCH}» і напиши назву серіалу.\n"
+        "2️⃣ Обери рядок зі списку — з’явиться постер і опис.\n"
+        "3️⃣ «Стежити за серіалом» → вибери сезон.\n"
+        f"4️⃣ Список перегляду — «{BTN_LIST}».\n\n"
+        "<i>Додатково:</i> у будь-якому чаті можна набрати "
+        f"<code>@{ (await bot.get_me()).username} назва</code> (інлайн-режим).\n\n"
+        "/cancel — скасувати введення пошуку.",
         parse_mode="HTML",
+        reply_markup=main_reply_keyboard(),
+    )
+
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Гаразд.", reply_markup=main_reply_keyboard())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Меню: пошук
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dp.message(F.text == BTN_SEARCH)
+async def menu_search(message: Message, state: FSMContext):
+    await db.upsert_user(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.full_name,
+    )
+    await state.set_state(SearchStates.waiting_query)
+    await message.answer(
+        "Напишіть <b>назву серіалу</b> (мінімум 2 символи).\n"
+        "Скасувати: /cancel",
+        parse_mode="HTML",
+        reply_markup=main_reply_keyboard(),
+    )
+
+
+@dp.message(Command("list"))
+@dp.message(F.text == BTN_LIST)
+async def cmd_list(message: Message, state: FSMContext):
+    await state.clear()
+    await send_watchlist_view(message)
+
+
+@dp.message(StateFilter(SearchStates.waiting_query), F.text)
+async def process_search_query(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    if raw.startswith("/"):
+        return
+
+    if len(raw) < 2:
+        await message.answer("Занадто коротко. Мінімум 2 символів або /cancel.")
+        return
+
+    await message.answer("⏳ Шукаю…")
+    results_data = await tmdb.search_series(raw)
+    await state.clear()
+
+    if not results_data:
+        await message.answer(
+            "Нічого не знайдено. Спробуйте іншу назву або натисніть «Пошук» ще раз.",
+            reply_markup=main_reply_keyboard(),
+        )
+        return
+
+    await message.answer(
+        "Оберіть серіал:",
+        reply_markup=kb_pick_search_result(results_data),
     )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Inline Query — автодоповнення пошуку
+#  Відкрити картку серіалу з чату (після пошуку)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dp.callback_query(F.data.startswith("open:"))
+async def cb_open_series(call: CallbackQuery):
+    series_id = int(call.data.split(":")[1])
+    await call.answer()
+
+    data = await tmdb.get_series(series_id)
+    if data.get("success") is False:
+        await call.message.answer("⚠️ Серіал не знайдено.")
+        return
+
+    caption = tmdb.format_series_info(data)
+    poster = tmdb.poster_url(data.get("poster_path")) or PLACEHOLDER_POSTER
+    await call.message.answer_photo(
+        photo=poster,
+        caption=caption,
+        parse_mode="HTML",
+        reply_markup=kb_series_actions(series_id),
+    )
+
+
+@dp.callback_query(F.data == "search:new")
+async def cb_search_new(call: CallbackQuery, state: FSMContext):
+    await state.set_state(SearchStates.waiting_query)
+    await call.answer()
+    await call.message.answer(
+        "Напишіть назву серіалу (мін. 2 символи). /cancel — скасувати.",
+        reply_markup=main_reply_keyboard(),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Inline Query (опційно, будь-який чат)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dp.inline_query()
@@ -138,7 +306,7 @@ async def handle_inline_search(query: InlineQuery):
     if len(text) < 2:
         await query.answer(
             [],
-            switch_pm_text="Введіть назву серіалу (мін. 2 символи)",
+            switch_pm_text="Відкрийте бота й натисніть «Пошук» або введіть мін. 2 символи",
             switch_pm_parameter="help",
             cache_time=1,
         )
@@ -177,7 +345,7 @@ async def handle_inline_search(query: InlineQuery):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Callback: показати деталі серіалу (кнопка «info:ID»)
+#  Callback: деталі / сезони / додати / видалити
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dp.callback_query(F.data.startswith("info:"))
@@ -197,10 +365,6 @@ async def cb_series_info(call: CallbackQuery):
         reply_markup=kb_series_actions(series_id),
     )
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Callback: вибір сезону (кнопка «track:ID»)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 @dp.callback_query(F.data.startswith("track:"))
 async def cb_track_series(call: CallbackQuery):
@@ -226,10 +390,6 @@ async def cb_track_series(call: CallbackQuery):
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Callback: підтвердження додавання сезону
-# ═══════════════════════════════════════════════════════════════════════════════
-
 @dp.callback_query(F.data.startswith("season:"))
 async def cb_add_season(call: CallbackQuery):
     _, series_id_str, season_str = call.data.split(":")
@@ -244,15 +404,13 @@ async def cb_add_season(call: CallbackQuery):
         call.from_user.full_name,
     )
 
-    # Already tracking?
     if await db.is_tracking(call.from_user.id, series_id, season_number):
         await call.message.answer(
-            f"⚠️ Ви вже відстежуєте цей сезон.",
+            "⚠️ Ви вже відстежуєте цей сезон.",
             parse_mode="HTML",
         )
         return
 
-    # Get series & season info
     series_data = await tmdb.get_series(series_id)
     if series_data.get("success") is False:
         await call.message.answer("⚠️ Серіал не знайдено.")
@@ -277,53 +435,17 @@ async def cb_add_season(call: CallbackQuery):
         await call.message.answer(
             f"✅ <b>{series_name}</b> — Сезон {season_number} додано до списку відстеження!\n"
             f"Вже вийшло епізодів: <b>{aired}</b>\n\n"
-            f"🔔 Повідомлення надходитимуть щодня о 10:00 при виходi нових епізодів.",
+            f"🔔 Нагадаю про нові епізоди після оновлення даних TMDB "
+            f"(перевірка кожні ~{CHECK_INTERVAL_MINUTES} хв).",
             parse_mode="HTML",
+            reply_markup=main_reply_keyboard(),
         )
     else:
-        await call.message.answer("⚠️ Не вдалося додати (можливо, вже у списку).")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  /list — список відстежуваних серіалів
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@dp.message(Command("list"))
-async def cmd_list(message: Message):
-    items = await db.get_watchlist(message.from_user.id)
-
-    if not items:
-        me = await bot.get_me()
-        un = me.username or "reeltrack_bot"
-        await message.answer(
-            "📋 Ваш список порожній.\n\n"
-            "Щоб шукати серіал: у <b>рядку введення</b> (не надсилаючи звичайне повідомлення) набери "
-            f"<code>@{un} назва</code> — з’явиться список із постерами. Обери рядок зверху.\n\n"
-            "Якщо списку немає: у @BotFather для бота ввімкни Inline mode (<code>/setinline</code>).",
-            parse_mode="HTML",
-        )
-        return
-
-    text = "📋 <b>Ваші серіали:</b>\n\n"
-    for item in items:
-        ep_info = f"Переглянуто/вийшло: {item['last_notified_episode']} еп."
-        text += (
-            f"▪️ <b>{item['series_name']}</b> — Сезон {item['season_number']}\n"
-            f"   <i>{ep_info}</i>\n"
+        await call.message.answer(
+            "⚠️ Не вдалося додати (можливо, вже у списку).",
+            reply_markup=main_reply_keyboard(),
         )
 
-    text += "\nНатисніть кнопку нижче, щоб видалити:"
-
-    await message.answer(
-        text,
-        parse_mode="HTML",
-        reply_markup=kb_my_list(items),
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Callback: видалення зі списку
-# ═══════════════════════════════════════════════════════════════════════════════
 
 @dp.callback_query(F.data.startswith("remove:"))
 async def cb_remove(call: CallbackQuery):
@@ -331,16 +453,30 @@ async def cb_remove(call: CallbackQuery):
     await db.remove_from_watchlist(call.from_user.id, watchlist_id)
     await call.answer("✅ Видалено зі списку")
     await call.message.delete()
-    await call.message.answer("✅ Серіал видалено зі списку відстеження.")
+    await call.message.answer(
+        "✅ Серіал видалено зі списку відстеження.",
+        reply_markup=main_reply_keyboard(),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Scheduler: щоденна перевірка нових епізодів
+#  Текст поза меню / станом
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dp.message(StateFilter(default_state), F.text, ~F.text.startswith("/"))
+async def idle_text_hint(message: Message):
+    await message.answer(
+        f"Оберіть дію кнопками внизу або натисніть «{BTN_SEARCH}».",
+        reply_markup=main_reply_keyboard(),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Scheduler: періодична перевірка нових епізодів
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def check_new_episodes():
-    """Daily job: check for new aired episodes and notify users."""
-    log.info("🕙 Running daily episode check…")
+    log.info("Running episode check (interval %s min)…", CHECK_INTERVAL_MINUTES)
     tracked = await db.get_all_tracked()
 
     for row in tracked:
@@ -351,7 +487,6 @@ async def check_new_episodes():
             if aired <= known:
                 continue
 
-            # New episode(s) found!
             new_count = aired - known
             ep_word = "епізод" if new_count == 1 else "епізоди" if new_count < 5 else "епізодів"
 
@@ -388,7 +523,7 @@ async def check_new_episodes():
         except Exception as e:
             log.error(f"Error checking {row['series_name']} S{row['season_number']}: {e}")
 
-    log.info("✅ Episode check done.")
+    log.info("Episode check done.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -422,17 +557,16 @@ async def main():
 
     scheduler.add_job(
         check_new_episodes,
-        trigger="cron",
-        hour=10,
-        minute=0,
-        timezone="Europe/Kyiv",
+        trigger="interval",
+        minutes=CHECK_INTERVAL_MINUTES,
+        id="episode_check",
+        replace_existing=True,
     )
     scheduler.start()
-    log.info("Scheduler started.")
+    log.info("Scheduler started (every %s min).", CHECK_INTERVAL_MINUTES)
 
     try:
         log.info("Starting bot polling…")
-        # close_bot_session=False: закриваємо сесію в finally, щоб не дублювати з aiogram
         await dp.start_polling(bot, skip_updates=True, close_bot_session=False)
     finally:
         scheduler.shutdown(wait=False)
