@@ -391,10 +391,23 @@ async def check_new_episodes():
 #  Entry point
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_ENV_HINTS = {
+    "BOT_TOKEN": "Railway → сервіс з bot.py → Variables → BOT_TOKEN.",
+    "TMDB_API_TOKEN": "Railway → той самий сервіс → Variables → TMDB_API_TOKEN (Read Access Token v4).",
+    "DATABASE_URL": (
+        "Додай PostgreSQL у проєкт (New → Database → PostgreSQL). Потім у сервісі бота: "
+        "Variables → + New variable → Variable Reference → обери Postgres → DATABASE_URL. "
+        "Без цього бот не бачить рядок підключення."
+    ),
+}
+
+
 async def main():
     for var in ("BOT_TOKEN", "TMDB_API_TOKEN", "DATABASE_URL"):
-        if not os.getenv(var):
-            raise RuntimeError(f"Відсутня змінна середовища: {var}")
+        if not (os.getenv(var) or "").strip():
+            raise RuntimeError(
+                f"Відсутня змінна середовища: {var}. {_ENV_HINTS[var]}"
+            )
 
     await db.init_db()
     log.info("Database initialized.")
