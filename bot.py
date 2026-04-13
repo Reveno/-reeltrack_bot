@@ -145,9 +145,9 @@ def watchlist_pick_reply_keyboard(lang: str) -> ReplyKeyboardMarkup:
 
 def watchlist_remove_reply_keyboard(lang: str, n: int) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
-    nums = list(range(1, n + 1))
-    for i in range(0, len(nums), 4):
-        b.row(*[KeyboardButton(text=tr(lang, "watchlist_remove_btn", num=x)) for x in nums[i : i + 4]])
+    nums = [str(i + 1) for i in range(n)]
+    for i in range(0, len(nums), 5):
+        b.row(*[KeyboardButton(text=x) for x in nums[i : i + 5]])
     b.row(KeyboardButton(text=tr(lang, "btn_watchlist_categories")))
     return b.as_markup(resize_keyboard=True)
 
@@ -327,24 +327,19 @@ async def render_watchlist_series(message: Message, lang: str, user_id: int, sta
         return
     series_enriched = await enrich_series_display_titles(series_items, lang)
     n = len(series_enriched)
-    lines = [
-        tr(lang, "watchlist_header_compact_series", count=n),
-        "",
-    ]
+    lines = [tr(lang, "watchlist_header"), ""]
     for idx, i in enumerate(series_enriched, 1):
         ep = tr(lang, "watchlist_episode_info", episode=i["last_notified_episode"])
         title = html.escape(i["display_title"] or "")
-        lines.append(
-            tr(
-                lang,
-                "watchlist_line_tv",
-                n=idx,
-                series_name=title,
-                sn=i["season_number"],
-                ep_info=ep,
-            )
+        row = tr(
+            lang,
+            "watchlist_row",
+            series_name=title,
+            season_number=i["season_number"],
+            ep_info=ep,
         )
-    lines.extend(["", tr(lang, "watchlist_remove_footer_series")])
+        lines.append(f"{idx}. {row}")
+    lines.extend(["", tr(lang, "watchlist_remove_hint_series")])
     await state.set_state(BotStates.watchlist_remove_pick)
     await state.update_data(wl_remove_kind="tv", wl_remove_ids=[i["id"] for i in series_enriched])
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=watchlist_remove_reply_keyboard(lang, n))
@@ -358,22 +353,17 @@ async def render_watchlist_movies(message: Message, lang: str, user_id: int, sta
         return
     movie_enriched = await enrich_movie_display_titles(movie_items, lang)
     n = len(movie_enriched)
-    lines = [
-        tr(lang, "watchlist_header_compact_movies", count=n),
-        "",
-    ]
+    lines = [tr(lang, "movie_watchlist_header"), ""]
     for idx, i in enumerate(movie_enriched, 1):
         title = html.escape(i["display_title"] or "")
-        lines.append(
-            tr(
-                lang,
-                "watchlist_line_movie",
-                n=idx,
-                movie_title=title,
-                region=html.escape(str(i["region"])),
-            )
+        row = tr(
+            lang,
+            "movie_watchlist_row",
+            movie_title=title,
+            region=html.escape(str(i["region"])),
         )
-    lines.extend(["", tr(lang, "watchlist_remove_footer_movies")])
+        lines.append(f"{idx}. {row}")
+    lines.extend(["", tr(lang, "watchlist_remove_hint_movies")])
     await state.set_state(BotStates.watchlist_remove_pick)
     await state.update_data(wl_remove_kind="movie", wl_remove_ids=[i["id"] for i in movie_enriched])
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=watchlist_remove_reply_keyboard(lang, n))
