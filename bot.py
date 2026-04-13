@@ -84,6 +84,7 @@ BTN_SEARCH_SET = all_button_texts("btn_search")
 BTN_LIST_SET = all_button_texts("btn_list")
 BTN_HELP_SET = all_button_texts("btn_help")
 BTN_LANG_SET = all_button_texts("btn_language")
+BTN_CANCEL_SET = all_button_texts("btn_cancel")
 
 
 class SearchStates(StatesGroup):
@@ -99,6 +100,12 @@ def main_reply_keyboard(lang: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.row(KeyboardButton(text=tr(lang, "btn_search")), KeyboardButton(text=tr(lang, "btn_list")))
     builder.row(KeyboardButton(text=tr(lang, "btn_help")), KeyboardButton(text=tr(lang, "btn_language")))
+    return builder.as_markup(resize_keyboard=True)
+
+
+def search_reply_keyboard(lang: str) -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text=tr(lang, "btn_cancel")))
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -242,7 +249,7 @@ async def handle_menu(message: Message, state: FSMContext):
     if text in BTN_SEARCH_SET:
         await db.upsert_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
         await state.set_state(SearchStates.waiting_query)
-        await message.answer(tr(lang, "prompt_search"), parse_mode="HTML", reply_markup=main_reply_keyboard(lang))
+        await message.answer(tr(lang, "prompt_search"), parse_mode="HTML", reply_markup=search_reply_keyboard(lang))
         return
 
     if text in BTN_LIST_SET:
@@ -286,6 +293,10 @@ async def cb_set_lang(call: CallbackQuery):
 async def process_search_query(message: Message, state: FSMContext):
     lang = await user_lang(message.from_user.id)
     raw = (message.text or "").strip()
+    if raw in BTN_CANCEL_SET:
+        await state.clear()
+        await message.answer(tr(lang, "cancelled"), reply_markup=main_reply_keyboard(lang))
+        return
     if raw.startswith("/"):
         return
     if raw in BTN_LIST_SET or raw in BTN_HELP_SET or raw in BTN_LANG_SET:
@@ -333,7 +344,7 @@ async def cb_search_new(call: CallbackQuery, state: FSMContext):
     lang = await user_lang(call.from_user.id)
     await call.answer()
     await state.set_state(SearchStates.waiting_query)
-    await call.message.answer(tr(lang, "prompt_search"), parse_mode="HTML", reply_markup=main_reply_keyboard(lang))
+    await call.message.answer(tr(lang, "prompt_search"), parse_mode="HTML", reply_markup=search_reply_keyboard(lang))
 
 
 @dp.inline_query()

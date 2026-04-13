@@ -10,7 +10,7 @@
     "start":  "👋 \u003cb\u003eHallo! Ich bin ein Serien-Tracker-Bot.\u003c/b\u003e\\n\\nNutze die Buttons unten:\\n• \u003cb\u003e{btn_search}\u003c/b\u003e — Serie in TMDB finden\\n• \u003cb\u003e{btn_list}\u003c/b\u003e — deine Merkliste\\n• \u003cb\u003e{btn_help}\u003c/b\u003e — kurze Anleitung\\n• \u003cb\u003e{btn_language}\u003c/b\u003e — Sprache wechseln\\n\\nIch benachrichtige dich über neue Episoden, sobald TMDB Daten aktualisiert (Prüfung alle \u003cb\u003e{minutes}\u003c/b\u003e Min.).",
     "help":  "📖 \u003cb\u003eSo funktioniert es\u003c/b\u003e\\n\\n1️⃣ Tippe «{btn_search}» und gib einen Serientitel ein.\\n2️⃣ Wähle ein Ergebnis — Poster und Details werden angezeigt.\\n3️⃣ «{btn_track}» → Staffel wählen.\\n4️⃣ Deine Liste — «{btn_list}».\\n\\n/cancel — Sucheingabe abbrechen.",
     "cancelled":  "Okay.",
-    "prompt_search":  "Gib einen \u003cb\u003eSerientitel\u003c/b\u003e ein (mind. 2 Zeichen).\\nAbbrechen: /cancel",
+    "prompt_search":  "Gib einen \u003cb\u003eSerientitel\u003c/b\u003e ein (mind. 2 Zeichen).\\nAbbrechen: Taste «❌ Abbrechen» oder /cancel",
     "search_too_short":  "Zu kurz. Mindestens 2 Zeichen oder /cancel.",
     "searching":  "⏳ Suche…",
     "search_empty":  "Nichts gefunden. Probiere einen anderen Titel.",
@@ -40,5 +40,6 @@
     "ep_word_many":  "Episoden",
     "lang_choose":  "Wähle die Sprache der Oberfläche:",
     "lang_changed":  "✅ Sprache geändert: \u003cb\u003e{lang_name}\u003c/b\u003e",
-    "lang_detected":  "✅ Sprache aus Telegram gesetzt: \u003cb\u003e{lang_name}\u003c/b\u003e"
+    "lang_detected":  "✅ Sprache aus Telegram gesetzt: \u003cb\u003e{lang_name}\u003c/b\u003e",
+    "btn_cancel":  "❌ Abbrechen"
 }
