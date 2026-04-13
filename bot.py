@@ -95,6 +95,7 @@ BTN_CANCEL_SET = all_button_texts("btn_cancel")
 BTN_WATCHLIST_SERIES_SET = all_button_texts("btn_watchlist_series")
 BTN_WATCHLIST_MOVIES_SET = all_button_texts("btn_watchlist_movies")
 BTN_BACK_TO_MENU_SET = all_button_texts("btn_back_to_menu")
+BTN_WATCHLIST_CATEGORIES_SET = all_button_texts("btn_watchlist_categories")
 BTN_TRACK_SET = all_button_texts("btn_track")
 BTN_TRACK_MOVIE_SET = all_button_texts("btn_track_movie")
 BTN_NEW_SEARCH_SET = all_button_texts("btn_new_search")
@@ -103,6 +104,7 @@ BTN_NEW_SEARCH_SET = all_button_texts("btn_new_search")
 class BotStates(StatesGroup):
     waiting_query = State()
     watchlist_pick = State()
+    watchlist_remove_pick = State()
     language_pick = State()
     search_results_pick = State()
     series_actions = State()
@@ -137,6 +139,15 @@ def watchlist_pick_reply_keyboard(lang: str) -> ReplyKeyboardMarkup:
         KeyboardButton(text=tr(lang, "btn_watchlist_movies")),
     )
     b.row(KeyboardButton(text=tr(lang, "btn_back_to_menu")))
+    return b.as_markup(resize_keyboard=True)
+
+
+def watchlist_remove_reply_keyboard(lang: str, n: int) -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    nums = [str(i + 1) for i in range(n)]
+    for i in range(0, len(nums), 5):
+        b.row(*[KeyboardButton(text=x) for x in nums[i : i + 5]])
+    b.row(KeyboardButton(text=tr(lang, "btn_watchlist_categories")))
     return b.as_markup(resize_keyboard=True)
 
 
@@ -229,28 +240,6 @@ def kb_movie_regions(movie_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def kb_watchlist_series(items: list, lang: str) -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    for i in items:
-        label = i.get("display_title") or i["series_name"]
-        b.button(text=tr(lang, "watchlist_remove_item", series_name=label, season_number=i["season_number"]), callback_data=f"remove_series:{i['id']}")
-    b.adjust(1)
-    return b.as_markup()
-
-
-def kb_watchlist_movies(items: list, lang: str) -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    for i in items:
-        label = i.get("display_title") or i["movie_title"]
-        b.button(text=tr(lang, "movie_watchlist_remove_item", movie_title=label, region=i["region"]), callback_data=f"remove_movie:{i['id']}")
-    b.adjust(1)
-    return b.as_markup()
-
-
-async def restore_main_keyboard(message: Message, lang: str):
-    await message.answer(tr(lang, "keyboard_bottom"), reply_markup=main_keyboard(lang))
-
-
 async def try_dispatch_main_menu(message: Message, state: FSMContext, text: str, lang: str) -> bool:
     if text in BTN_SERIES_SET:
         await state.clear()
@@ -318,43 +307,45 @@ async def enrich_movie_display_titles(items: list[dict], lang: str) -> list[dict
     return [{**i, "display_title": t} for i, t in zip(items, titles)]
 
 
-async def render_watchlist_series(message: Message, lang: str, user_id: int):
+async def render_watchlist_series(message: Message, lang: str, user_id: int, state: FSMContext):
     series_items = await db.get_watchlist(user_id)
     if not series_items:
-        await message.answer(tr(lang, "watchlist_empty_series"), parse_mode="HTML", reply_markup=main_keyboard(lang))
+        await state.set_state(BotStates.watchlist_pick)
+        await message.answer(tr(lang, "watchlist_empty_series"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang))
         return
     series_enriched = await enrich_series_display_titles(series_items, lang)
-    lines = [tr(lang, "watchlist_header"), ""]
-    for i in series_enriched:
+    lines = [tr(lang, "watchlist_header"), "", tr(lang, "watchlist_remove_by_number"), ""]
+    for idx, i in enumerate(series_enriched, 1):
         ep = tr(lang, "watchlist_episode_info", episode=i["last_notified_episode"])
-        lines.append(
-            tr(
-                lang,
-                "watchlist_row",
-                series_name=i["display_title"],
-                season_number=i["season_number"],
-                ep_info=ep,
-            )
+        row = tr(
+            lang,
+            "watchlist_row",
+            series_name=i["display_title"],
+            season_number=i["season_number"],
+            ep_info=ep,
         )
-    lines.append("")
-    lines.append(tr(lang, "watchlist_remove_hint_series"))
-    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_series(series_enriched, lang))
-    await restore_main_keyboard(message, lang)
+        lines.append(f"{idx}. {row}")
+    n = len(series_enriched)
+    await state.set_state(BotStates.watchlist_remove_pick)
+    await state.update_data(wl_remove_kind="tv", wl_remove_ids=[i["id"] for i in series_enriched])
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=watchlist_remove_reply_keyboard(lang, n))
 
 
-async def render_watchlist_movies(message: Message, lang: str, user_id: int):
+async def render_watchlist_movies(message: Message, lang: str, user_id: int, state: FSMContext):
     movie_items = await db.get_movie_watchlist(user_id)
     if not movie_items:
-        await message.answer(tr(lang, "watchlist_empty_movies"), parse_mode="HTML", reply_markup=main_keyboard(lang))
+        await state.set_state(BotStates.watchlist_pick)
+        await message.answer(tr(lang, "watchlist_empty_movies"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang))
         return
     movie_enriched = await enrich_movie_display_titles(movie_items, lang)
-    lines = [tr(lang, "movie_watchlist_header"), ""]
-    for i in movie_enriched:
-        lines.append(tr(lang, "movie_watchlist_row", movie_title=i["display_title"], region=i["region"]))
-    lines.append("")
-    lines.append(tr(lang, "watchlist_remove_hint_movies"))
-    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_movies(movie_enriched, lang))
-    await restore_main_keyboard(message, lang)
+    lines = [tr(lang, "movie_watchlist_header"), "", tr(lang, "watchlist_remove_by_number_movies"), ""]
+    for idx, i in enumerate(movie_enriched, 1):
+        row = tr(lang, "movie_watchlist_row", movie_title=i["display_title"], region=i["region"])
+        lines.append(f"{idx}. {row}")
+    n = len(movie_enriched)
+    await state.set_state(BotStates.watchlist_remove_pick)
+    await state.update_data(wl_remove_kind="movie", wl_remove_ids=[i["id"] for i in movie_enriched])
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=watchlist_remove_reply_keyboard(lang, n))
 
 
 async def render_watchlist(message: Message, lang: str, state: FSMContext):
@@ -376,16 +367,8 @@ async def render_watchlist(message: Message, lang: str, state: FSMContext):
         )
         return
 
-    has_s, has_m = bool(series_items), bool(movie_items)
-    if has_s and has_m:
-        await state.set_state(BotStates.watchlist_pick)
-        await message.answer(tr(lang, "watchlist_choose_kind"), reply_markup=watchlist_pick_reply_keyboard(lang))
-        return
-    await state.clear()
-    if has_s:
-        await render_watchlist_series(message, lang, user_id)
-        return
-    await render_watchlist_movies(message, lang, user_id)
+    await state.set_state(BotStates.watchlist_pick)
+    await message.answer(tr(lang, "watchlist_choose_kind"), reply_markup=watchlist_pick_reply_keyboard(lang))
 
 
 async def open_media_detail(message: Message, state: FSMContext, lang: str, media: str, tmdb_id: int):
@@ -543,13 +526,44 @@ async def handle_watchlist_pick(message: Message, state: FSMContext):
         return
     if text in BTN_WATCHLIST_SERIES_SET:
         await state.clear()
-        await render_watchlist_series(message, lang, message.from_user.id)
+        await render_watchlist_series(message, lang, message.from_user.id, state)
         return
     if text in BTN_WATCHLIST_MOVIES_SET:
         await state.clear()
-        await render_watchlist_movies(message, lang, message.from_user.id)
+        await render_watchlist_movies(message, lang, message.from_user.id, state)
         return
     await message.answer(tr(lang, "unknown_cmd"), reply_markup=watchlist_pick_reply_keyboard(lang))
+
+
+@dp.message(StateFilter(BotStates.watchlist_remove_pick), F.text)
+async def handle_watchlist_remove_pick(message: Message, state: FSMContext):
+    lang = await user_lang(message.from_user.id)
+    text = (message.text or "").strip()
+    uid = message.from_user.id
+    if await try_dispatch_main_menu(message, state, text, lang):
+        return
+    if text in BTN_WATCHLIST_CATEGORIES_SET:
+        await state.set_state(BotStates.watchlist_pick)
+        await message.answer(tr(lang, "watchlist_choose_kind"), reply_markup=watchlist_pick_reply_keyboard(lang))
+        return
+    data = await state.get_data()
+    ids: list = data.get("wl_remove_ids") or []
+    kind = data.get("wl_remove_kind", "tv")
+    if text.isdigit():
+        idx = int(text) - 1
+        if 0 <= idx < len(ids):
+            rid = ids[idx]
+            if kind == "tv":
+                await db.remove_from_watchlist(uid, rid)
+            else:
+                await db.remove_movie_from_watchlist(uid, rid)
+            await message.answer(tr(lang, "removed_short"))
+            if kind == "tv":
+                await render_watchlist_series(message, lang, uid, state)
+            else:
+                await render_watchlist_movies(message, lang, uid, state)
+            return
+    await message.answer(tr(lang, "unknown_cmd"), reply_markup=watchlist_remove_reply_keyboard(lang, len(ids)))
 
 
 @dp.message(StateFilter(BotStates.language_pick), F.text)
