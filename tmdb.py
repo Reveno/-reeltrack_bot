@@ -5,6 +5,11 @@ import aiohttp
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 LANGUAGE = "uk-UA"
+LANG_MAP = {
+    "uk": "uk-UA",
+    "en": "en-US",
+    "de": "de-DE",
+}
 
 
 def _headers() -> dict:
@@ -18,13 +23,18 @@ def poster_url(path: str | None) -> str | None:
     return f"{TMDB_IMAGE_BASE}{path}" if path else None
 
 
-async def search_series(query: str) -> list[dict]:
+def resolve_tmdb_language(language: str | None = None) -> str:
+    code = (language or "").split("-")[0].lower()
+    return LANG_MAP.get(code, LANGUAGE)
+
+
+async def search_series(query: str, language: str | None = None) -> list[dict]:
     """Search TV series by name. Returns up to 10 results."""
     async with aiohttp.ClientSession() as session:
         async with session.get(
             f"{TMDB_BASE}/search/tv",
             headers=_headers(),
-            params={"query": query, "language": LANGUAGE, "page": 1},
+            params={"query": query, "language": resolve_tmdb_language(language), "page": 1},
         ) as r:
             if r.status != 200:
                 return []
@@ -32,13 +42,13 @@ async def search_series(query: str) -> list[dict]:
             return data.get("results", [])[:10]
 
 
-async def get_series(series_id: int) -> dict:
+async def get_series(series_id: int, language: str | None = None) -> dict:
     """Get full series details including seasons list."""
     async with aiohttp.ClientSession() as session:
         async with session.get(
             f"{TMDB_BASE}/tv/{series_id}",
             headers=_headers(),
-            params={"language": LANGUAGE},
+            params={"language": resolve_tmdb_language(language)},
         ) as r:
             data = await r.json()
             if r.status != 200:
@@ -48,13 +58,13 @@ async def get_series(series_id: int) -> dict:
             return data
 
 
-async def get_season(series_id: int, season_number: int) -> dict:
+async def get_season(series_id: int, season_number: int, language: str | None = None) -> dict:
     """Get season details with all episodes."""
     async with aiohttp.ClientSession() as session:
         async with session.get(
             f"{TMDB_BASE}/tv/{series_id}/season/{season_number}",
             headers=_headers(),
-            params={"language": LANGUAGE},
+            params={"language": resolve_tmdb_language(language)},
         ) as r:
             data = await r.json()
             if r.status != 200:
@@ -64,9 +74,9 @@ async def get_season(series_id: int, season_number: int) -> dict:
             return data
 
 
-async def count_aired_episodes(series_id: int, season_number: int) -> int:
+async def count_aired_episodes(series_id: int, season_number: int, language: str | None = None) -> int:
     """Count episodes that have already aired (air_date <= today)."""
-    season = await get_season(series_id, season_number)
+    season = await get_season(series_id, season_number, language=language)
     today = date.today().isoformat()
     episodes = season.get("episodes", [])
     return sum(

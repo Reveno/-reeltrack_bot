@@ -55,6 +55,13 @@ async def init_db():
             );
 
             CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
+
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                language TEXT NOT NULL DEFAULT 'uk',
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
         """)
 
 
@@ -73,6 +80,48 @@ async def upsert_user(user_id: int, username: str | None, full_name: str):
             """,
             user_id, username, full_name,
         )
+        await conn.execute(
+            "INSERT INTO user_settings (user_id, language) VALUES ($1, 'uk') ON CONFLICT (user_id) DO NOTHING",
+            user_id,
+        )
+
+
+async def ensure_user_settings(user_id: int, language: str = "uk"):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO user_settings (user_id, language)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            user_id, language,
+        )
+
+
+async def set_user_language(user_id: int, language: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO user_settings (user_id, language, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (user_id) DO UPDATE
+              SET language = EXCLUDED.language,
+                  updated_at = NOW()
+            """,
+            user_id, language,
+        )
+
+
+async def get_user_language(user_id: int, default: str = "uk") -> str:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        lang = await conn.fetchval(
+            "SELECT language FROM user_settings WHERE user_id = $1",
+            user_id,
+        )
+        return lang or default
 
 
 # ── Watchlist ─────────────────────────────────────────────────────────────────
@@ -145,8 +194,10 @@ async def get_all_tracked() -> list[asyncpg.Record]:
     async with pool.acquire() as conn:
         return await conn.fetch(
             """
-            SELECT id, user_id, series_id, series_name, season_number, last_notified_episode
-            FROM watchlist
+            SELECT w.id, w.user_id, w.series_id, w.series_name, w.season_number, w.last_notified_episode,
+                   COALESCE(us.language, 'uk') AS language
+            FROM watchlist w
+            LEFT JOIN user_settings us ON us.user_id = w.user_id
             ORDER BY series_id, season_number
             """
         )
