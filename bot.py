@@ -39,7 +39,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger(__name__)
 
-SUPPORTED_LANGS = ("uk", "en", "de")
+SUPPORTED_LANGS = ("uk", "en", "de", "pl")
 DEFAULT_LANG = "uk"
 LOCALES_DIR = Path(__file__).parent / "locales"
 
@@ -124,25 +124,33 @@ def kb_seasons(series_id: int, seasons: list[dict], lang: str) -> InlineKeyboard
         if n == 0:
             continue
         ep = s.get("episode_count", "?")
-        builder.button(text=f"Season {n} ({ep})", callback_data=f"season:{series_id}:{n}")
+        builder.button(text=tr(lang, "season_btn", n=n, ep=ep), callback_data=f"season:{series_id}:{n}")
     builder.button(text=tr(lang, "btn_back"), callback_data=f"info:{series_id}")
     builder.adjust(2)
     return builder.as_markup()
 
 
-def kb_my_list(items) -> InlineKeyboardMarkup:
+def kb_my_list(items, lang: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for item in items:
-        builder.button(text=f"🗑 {item['series_name']} — S{item['season_number']}", callback_data=f"remove:{item['id']}")
+        builder.button(
+            text=tr(
+                lang,
+                "watchlist_remove_item",
+                series_name=item["series_name"],
+                season_number=item["season_number"],
+            ),
+            callback_data=f"remove:{item['id']}",
+        )
     builder.adjust(1)
     return builder.as_markup()
 
 
-def kb_pick_search_result(results: list[dict]) -> InlineKeyboardMarkup:
+def kb_pick_search_result(results: list[dict], lang: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for s in results[:10]:
         sid = s["id"]
-        name = s.get("name") or s.get("original_name") or "Unknown"
+        name = s.get("name") or s.get("original_name") or tr(lang, "series_unknown")
         year = (s.get("first_air_date") or "")[:4]
         label = f"{name}" + (f" ({year})" if year else "")
         builder.button(text=label[:60], callback_data=f"open:{sid}")
@@ -183,7 +191,7 @@ async def send_watchlist_view(message: Message, lang: str):
         )
     lines.append("")
     lines.append(tr(lang, "watchlist_remove_hint"))
-    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_my_list(items))
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_my_list(items, lang))
 
 
 @dp.message(CommandStart())
@@ -315,7 +323,7 @@ async def process_search_query(message: Message, state: FSMContext):
         await message.answer(tr(lang, "search_empty"), reply_markup=main_reply_keyboard(lang))
         return
 
-    await message.answer(tr(lang, "choose_series"), reply_markup=kb_pick_search_result(results))
+    await message.answer(tr(lang, "choose_series"), reply_markup=kb_pick_search_result(results, lang))
 
 
 @dp.callback_query(F.data.startswith("open:"))
@@ -329,7 +337,7 @@ async def cb_open_series(call: CallbackQuery):
         await call.message.answer(tr(lang, "series_not_found"))
         return
 
-    caption = tmdb.format_series_info(data)
+    caption = tmdb.format_series_info(data, language=lang, tr_func=tr)
     poster = tmdb.poster_url(data.get("poster_path")) or PLACEHOLDER_POSTER
     await call.message.answer_photo(
         photo=poster,
@@ -360,9 +368,9 @@ async def handle_inline_search(query: InlineQuery):
     for s in results:
         sid = str(s["id"])
         poster = tmdb.poster_url(s.get("poster_path")) or PLACEHOLDER_POSTER
-        name = s.get("name") or s.get("original_name") or "Unknown"
+        name = s.get("name") or s.get("original_name") or tr(lang, "series_unknown")
         year = (s.get("first_air_date") or "")[:4]
-        overview = (s.get("overview") or "No description")[:200]
+        overview = (s.get("overview") or tr(lang, "series_no_description"))[:200]
         caption = f"<b>{name}</b>" + (f" ({year})" if year else "") + f"\n\n{overview}"
         items.append(
             InlineQueryResultPhoto(
@@ -391,7 +399,7 @@ async def cb_series_info(call: CallbackQuery):
         return
 
     await call.message.edit_caption(
-        caption=tmdb.format_series_info(data),
+        caption=tmdb.format_series_info(data, language=lang, tr_func=tr),
         parse_mode="HTML",
         reply_markup=kb_series_actions(series_id, lang),
     )
@@ -414,7 +422,7 @@ async def cb_track_series(call: CallbackQuery):
         return
 
     await call.message.edit_caption(
-        caption=tmdb.format_series_info(data) + "\n\n" + tr(lang, "choose_season"),
+        caption=tmdb.format_series_info(data, language=lang, tr_func=tr) + "\n\n" + tr(lang, "choose_season"),
         parse_mode="HTML",
         reply_markup=kb_seasons(series_id, seasons, lang),
     )
@@ -442,7 +450,7 @@ async def cb_add_season(call: CallbackQuery):
     added = await db.add_to_watchlist(
         user_id=call.from_user.id,
         series_id=series_id,
-        series_name=series_data.get("name") or series_data.get("original_name") or "Unknown",
+        series_name=series_data.get("name") or series_data.get("original_name") or tr(lang, "series_unknown"),
         poster_path=series_data.get("poster_path"),
         season_number=season_number,
         total_seasons=series_data.get("number_of_seasons", 1),
@@ -454,7 +462,7 @@ async def cb_add_season(call: CallbackQuery):
             tr(
                 lang,
                 "added_to_watchlist",
-                series_name=series_data.get("name") or series_data.get("original_name") or "Unknown",
+                series_name=series_data.get("name") or series_data.get("original_name") or tr(lang, "series_unknown"),
                 season_number=season_number,
                 aired=aired,
                 minutes=CHECK_INTERVAL_MINUTES,

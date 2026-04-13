@@ -9,6 +9,7 @@ LANG_MAP = {
     "uk": "uk-UA",
     "en": "en-US",
     "de": "de-DE",
+    "pl": "pl-PL",
 }
 
 
@@ -85,16 +86,17 @@ async def count_aired_episodes(series_id: int, season_number: int, language: str
     )
 
 
-def format_series_info(data: dict) -> str:
+def format_series_info(data: dict, language: str = "uk", tr_func=None) -> str:
     """Format series info as HTML caption."""
-    name = data.get("name", "Невідомо")
+    t = tr_func or (lambda _lang, key, **kwargs: key.format(**kwargs))
+    name = data.get("name", t(language, "series_unknown"))
     original = data.get("original_name", "")
     year = (data.get("first_air_date") or "")[:4]
     status_map = {
-        "Returning Series": "🔄 Виходить",
-        "Ended": "✅ Завершено",
-        "Canceled": "❌ Скасовано",
-        "In Production": "🎬 У виробництві",
+        "Returning Series": t(language, "series_status_returning"),
+        "Ended": t(language, "series_status_ended"),
+        "Canceled": t(language, "series_status_canceled"),
+        "In Production": t(language, "series_status_production"),
     }
     status = status_map.get(data.get("status", ""), data.get("status", ""))
     raw_rating = data.get("vote_average")
@@ -104,7 +106,7 @@ def format_series_info(data: dict) -> str:
         rating = 0.0
     seasons = data.get("number_of_seasons", 0)
     episodes = data.get("number_of_episodes", 0)
-    overview = data.get("overview") or "Опис відсутній."
+    overview = data.get("overview") or t(language, "series_no_description")
     if len(overview) > 600:
         overview = overview[:600] + "…"
 
@@ -115,9 +117,9 @@ def format_series_info(data: dict) -> str:
     lines = [
         f"<b>{name}</b>",
         f"<i>{original}</i>" if original and original != name else "",
-        f"📅 {year}  •  ⭐ {rating:.1f}  •  {status}",
+        t(language, "series_meta", year=year, rating=rating, status=status),
         f"🎭 {genres}" if genres else "",
-        f"📺 {seasons} сез. / {episodes} еп.",
+        t(language, "series_counts", seasons=seasons, episodes=episodes),
         "",
         overview,
     ]
