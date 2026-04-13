@@ -1,4 +1,4 @@
-﻿"""
+"""
 Reeltrack bot: series + movie tracking with localization.
 """
 
@@ -44,7 +44,12 @@ T = load_locales()
 
 
 def tr(lang: str, key: str, **kwargs) -> str:
-    tmpl = T.get(lang, T[DEFAULT_LANG]).get(key, T[DEFAULT_LANG].get(key, key))
+    for d in (T.get(lang), T.get("en"), T.get(DEFAULT_LANG)):
+        if d and key in d:
+            tmpl = d[key]
+            break
+    else:
+        tmpl = key
     return tmpl.replace("\\n", "\n").format(**kwargs)
 
 
@@ -66,6 +71,8 @@ dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 CHECK_INTERVAL_MINUTES = max(5, int(os.getenv("CHECK_INTERVAL_MINUTES") or "15"))
 PLACEHOLDER_POSTER = "https://placehold.co/500x750/1a1a2e/ffffff?text=No+Poster"
+TMDB_TITLE_CONCURRENCY = 4
+_tmdb_title_sem = asyncio.Semaphore(TMDB_TITLE_CONCURRENCY)
 
 BTN_SERIES_SET = all_button_texts("btn_search_series")
 BTN_MOVIES_SET = all_button_texts("btn_search_movies")
@@ -156,7 +163,8 @@ def kb_movie_regions(movie_id: int) -> InlineKeyboardMarkup:
 def kb_watchlist_series(items: list, lang: str) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for i in items:
-        b.button(text=tr(lang, "watchlist_remove_item", series_name=i["series_name"], season_number=i["season_number"]), callback_data=f"remove_series:{i['id']}")
+        label = i.get("display_title") or i["series_name"]
+        b.button(text=tr(lang, "watchlist_remove_item", series_name=label, season_number=i["season_number"]), callback_data=f"remove_series:{i['id']}")
     b.adjust(1)
     return b.as_markup()
 
@@ -164,9 +172,48 @@ def kb_watchlist_series(items: list, lang: str) -> InlineKeyboardMarkup:
 def kb_watchlist_movies(items: list, lang: str) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for i in items:
-        b.button(text=tr(lang, "movie_watchlist_remove_item", movie_title=i["movie_title"], region=i["region"]), callback_data=f"remove_movie:{i['id']}")
+        label = i.get("display_title") or i["movie_title"]
+        b.button(text=tr(lang, "movie_watchlist_remove_item", movie_title=label, region=i["region"]), callback_data=f"remove_movie:{i['id']}")
     b.adjust(1)
     return b.as_markup()
+
+
+async def _tmdb_series_display_title(series_id: int, lang: str, fallback: str) -> str:
+    async with _tmdb_title_sem:
+        try:
+            data = await tmdb.get_series(series_id, language=lang)
+            if data.get("success") is False:
+                return fallback
+            return data.get("name") or data.get("original_name") or fallback
+        except Exception:
+            log.exception("tmdb series title %s", series_id)
+            return fallback
+
+
+async def _tmdb_movie_display_title(movie_id: int, lang: str, fallback: str) -> str:
+    async with _tmdb_title_sem:
+        try:
+            data = await tmdb.get_movie(movie_id, language=lang)
+            if data.get("success") is False:
+                return fallback
+            return data.get("title") or data.get("original_title") or fallback
+        except Exception:
+            log.exception("tmdb movie title %s", movie_id)
+            return fallback
+
+
+async def enrich_series_display_titles(items: list[dict], lang: str) -> list[dict]:
+    if not items:
+        return []
+    titles = await asyncio.gather(*[_tmdb_series_display_title(i["series_id"], lang, i["series_name"]) for i in items])
+    return [{**i, "display_title": t} for i, t in zip(items, titles)]
+
+
+async def enrich_movie_display_titles(items: list[dict], lang: str) -> list[dict]:
+    if not items:
+        return []
+    titles = await asyncio.gather(*[_tmdb_movie_display_title(i["movie_id"], lang, i["movie_title"]) for i in items])
+    return [{**i, "display_title": t} for i, t in zip(items, titles)]
 
 
 async def render_watchlist(message: Message, lang: str):
@@ -174,25 +221,44 @@ async def render_watchlist(message: Message, lang: str):
     movie_items = await db.get_movie_watchlist(message.from_user.id)
 
     if not series_items and not movie_items:
-        await message.answer(tr(lang, "watchlist_empty", btn_search=tr(lang, "btn_search_series")), parse_mode="HTML", reply_markup=main_keyboard(lang))
+        await message.answer(
+            tr(
+                lang,
+                "watchlist_empty",
+                btn_search_series=tr(lang, "btn_search_series"),
+                btn_search_movies=tr(lang, "btn_search_movies"),
+            ),
+            parse_mode="HTML",
+            reply_markup=main_keyboard(lang),
+        )
         return
 
     if series_items:
+        series_enriched = await enrich_series_display_titles(series_items, lang)
         lines = [tr(lang, "watchlist_header"), ""]
-        for i in series_items:
+        for i in series_enriched:
             ep = tr(lang, "watchlist_episode_info", episode=i["last_notified_episode"])
-            lines.append(tr(lang, "watchlist_row", series_name=i["series_name"], season_number=i["season_number"], ep_info=ep))
+            lines.append(
+                tr(
+                    lang,
+                    "watchlist_row",
+                    series_name=i["display_title"],
+                    season_number=i["season_number"],
+                    ep_info=ep,
+                )
+            )
         lines.append("")
         lines.append(tr(lang, "watchlist_remove_hint_series"))
-        await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_series(series_items, lang))
+        await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_series(series_enriched, lang))
 
     if movie_items:
+        movie_enriched = await enrich_movie_display_titles(movie_items, lang)
         lines = [tr(lang, "movie_watchlist_header"), ""]
-        for i in movie_items:
-            lines.append(tr(lang, "movie_watchlist_row", movie_title=i["movie_title"], region=i["region"]))
+        for i in movie_enriched:
+            lines.append(tr(lang, "movie_watchlist_row", movie_title=i["display_title"], region=i["region"]))
         lines.append("")
         lines.append(tr(lang, "watchlist_remove_hint_movies"))
-        await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_movies(movie_items, lang))
+        await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_movies(movie_enriched, lang))
 
 
 @dp.message(CommandStart())
@@ -442,8 +508,18 @@ async def check_updates():
                 continue
             new_count = aired - known
             key = plural_key_uk(new_count) if lang == "uk" else ("one" if new_count == 1 else "many")
-            text = tr(lang, "notify_text", title=tr(lang, f"notify_title_{key}"), series_name=row["series_name"], season_number=row["season_number"], new_count=new_count, ep_word=tr(lang, f"ep_word_{key}"), aired=aired)
             series_data = await tmdb.get_series(row["series_id"], language=lang)
+            display_series = series_data.get("name") or series_data.get("original_name") or row["series_name"]
+            text = tr(
+                lang,
+                "notify_text",
+                title=tr(lang, f"notify_title_{key}"),
+                series_name=display_series,
+                season_number=row["season_number"],
+                new_count=new_count,
+                ep_word=tr(lang, f"ep_word_{key}"),
+                aired=aired,
+            )
             poster = tmdb.poster_url(series_data.get("poster_path"))
             if poster:
                 await bot.send_photo(chat_id=row["user_id"], photo=poster, caption=text, parse_mode="HTML")
@@ -466,7 +542,9 @@ async def check_updates():
                 release_date = (movie_data.get("release_date") or "")[:10]
             if not release_date or release_date > today_iso:
                 continue
-            text = tr(lang, "movie_released_notify", movie_title=row["movie_title"], region=row["region"], release_date=release_date)
+            movie_data = await tmdb.get_movie(row["movie_id"], language=lang)
+            display_movie = movie_data.get("title") or movie_data.get("original_title") or row["movie_title"]
+            text = tr(lang, "movie_released_notify", movie_title=display_movie, region=row["region"], release_date=release_date)
             poster = tmdb.poster_url(row.get("poster_path"))
             if poster:
                 await bot.send_photo(chat_id=row["user_id"], photo=poster, caption=text, parse_mode="HTML")
