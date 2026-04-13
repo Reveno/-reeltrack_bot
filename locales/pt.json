@@ -61,6 +61,7 @@
   "removed_movie": "✅ Filme removido.",
   "removed_short": "✅ Removido",
   "idle_hint": "Use os botões ou «{btn_search_series}» / «{btn_search_movies}».",
+  "main_menu_hint": "Use os botões do menu abaixo 👇",
   "inline_hint": "Abra o bot e busque ou digite pelo menos 2 caracteres",
   "unknown_cmd": "Comando desconhecido.",
   "notify_title_one": "🔔 <b>Novo episódio!</b>",

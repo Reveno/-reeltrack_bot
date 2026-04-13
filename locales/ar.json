@@ -61,6 +61,7 @@
   "removed_movie": "✅ أُزيل الفيلم من القائمة.",
   "removed_short": "✅ أُزيل",
   "idle_hint": "استخدم الأزرار أو «{btn_search_series}» / «{btn_search_movies}».",
+  "main_menu_hint": "استخدم أزرار القائمة 👇",
   "inline_hint": "افتح البوت وابحث أو اكتب حرفين على الأقل",
   "unknown_cmd": "أمر غير معروف.",
   "notify_title_one": "🔔 <b>حلقة جديدة!</b>",

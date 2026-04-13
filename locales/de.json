@@ -61,6 +61,7 @@
   "removed_movie": "✅ Film aus der Liste entfernt.",
   "removed_short": "✅ Aus Liste entfernt",
   "idle_hint": "Nutze die Buttons oder tippe «{btn_search_series}» / «{btn_search_movies}».",
+  "main_menu_hint": "Nutze die Menütasten unten 👇",
   "inline_hint": "Bot öffnen und Suche nutzen oder mind. 2 Zeichen eingeben",
   "unknown_cmd": "Unbekannter Befehl.",
   "notify_title_one": "🔔 <b>Neue Episode!</b>",

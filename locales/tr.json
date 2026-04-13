@@ -61,6 +61,7 @@
   "removed_movie": "✅ Film listeden çıkarıldı.",
   "removed_short": "✅ Kaldırıldı",
   "idle_hint": "Düğmeleri veya «{btn_search_series}» / «{btn_search_movies}» kullanın.",
+  "main_menu_hint": "Menü düğmelerini kullan 👇",
   "inline_hint": "Botu açıp arayın veya en az 2 karakter yazın",
   "unknown_cmd": "Bilinmeyen komut.",
   "notify_title_one": "🔔 <b>Yeni bölüm!</b>",

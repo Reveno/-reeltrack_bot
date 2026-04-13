@@ -61,6 +61,7 @@
   "removed_movie": "✅ Movie removed from watchlist.",
   "removed_short": "✅ Removed from list",
   "idle_hint": "Use the buttons below or tap «{btn_search_series}» / «{btn_search_movies}».",
+  "main_menu_hint": "Use the menu buttons below 👇",
   "inline_hint": "Open bot and tap Search, or type at least 2 chars",
   "unknown_cmd": "Unknown command.",
   "notify_title_one": "🔔 <b>New episode!</b>",

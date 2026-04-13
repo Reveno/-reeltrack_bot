@@ -160,10 +160,6 @@ def main_keyboard(lang: str) -> ReplyKeyboardMarkup:
     return b.as_markup(resize_keyboard=True)
 
 
-# Telegram requires non-empty text; try quiet placeholders first, then fall back.
-_KB_PLACEHOLDERS = ("\u00a0", "\u2060", ".")
-
-
 async def delete_stored_prompt(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     mid = data.get("ui_prompt_message_id")
@@ -180,13 +176,12 @@ async def answer_main_keyboard(message: Message, lang: str, *, state: FSMContext
     if state is not None:
         await delete_stored_prompt(message, state)
     kb = main_keyboard(lang)
-    for chunk in _KB_PLACEHOLDERS:
-        try:
-            await message.answer(chunk, reply_markup=kb, disable_notification=True)
-            return
-        except TelegramBadRequest as e:
-            log.warning("main keyboard placeholder failed: %s", e)
-    await message.answer(tr(lang, "cancelled"), reply_markup=kb, disable_notification=True)
+    text = tr(lang, "main_menu_hint")
+    try:
+        await message.answer(text, reply_markup=kb, disable_notification=True)
+    except TelegramBadRequest as e:
+        log.warning("main keyboard hint failed: %s", e)
+        await message.answer(tr(lang, "cancelled"), reply_markup=kb, disable_notification=True)
 
 
 def search_keyboard(lang: str) -> ReplyKeyboardMarkup:
