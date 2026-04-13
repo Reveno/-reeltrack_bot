@@ -127,6 +127,14 @@ def main_keyboard(lang: str) -> ReplyKeyboardMarkup:
     return b.as_markup(resize_keyboard=True)
 
 
+# Telegram requires non-empty message text; ZWSP restores main keyboard without visible wording.
+_ZWSP = "\u200b"
+
+
+async def answer_main_keyboard(message: Message, lang: str) -> None:
+    await message.answer(_ZWSP, reply_markup=main_keyboard(lang), disable_notification=True)
+
+
 def search_keyboard(lang: str) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.row(KeyboardButton(text=tr(lang, "btn_cancel")))
@@ -543,7 +551,7 @@ async def handle_watchlist_pick(message: Message, state: FSMContext):
         return
     if text in BTN_BACK_TO_MENU_SET:
         await state.clear()
-        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        await answer_main_keyboard(message, lang)
         return
     if text in BTN_WATCHLIST_SERIES_SET:
         await state.clear()
@@ -596,7 +604,7 @@ async def handle_language_pick(message: Message, state: FSMContext):
         return
     if text in BTN_BACK_TO_MENU_SET:
         await state.clear()
-        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        await answer_main_keyboard(message, lang)
         return
     code = resolve_language_code_from_button_text(text)
     if code:
@@ -616,7 +624,7 @@ async def handle_search_results_pick(message: Message, state: FSMContext):
         return
     if text in BTN_CANCEL_SET:
         await state.clear()
-        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        await answer_main_keyboard(message, lang)
         return
     data = await state.get_data()
     ids: list = data.get("search_pick_ids") or []
@@ -637,7 +645,7 @@ async def handle_series_actions(message: Message, state: FSMContext):
         return
     if text in BTN_CANCEL_SET:
         await state.clear()
-        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        await answer_main_keyboard(message, lang)
         return
     data = await state.get_data()
     series_id = data.get("detail_series_id")
@@ -661,7 +669,7 @@ async def handle_movie_actions(message: Message, state: FSMContext):
         return
     if text in BTN_CANCEL_SET:
         await state.clear()
-        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        await answer_main_keyboard(message, lang)
         return
     data = await state.get_data()
     movie_id = data.get("detail_movie_id")
@@ -687,7 +695,7 @@ async def handle_season_pick(message: Message, state: FSMContext):
         return
     if text in BTN_CANCEL_SET:
         await state.clear()
-        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        await answer_main_keyboard(message, lang)
         return
     data = await state.get_data()
     mapping: dict = data.get("season_label_to_num") or {}
@@ -709,7 +717,7 @@ async def handle_movie_region_pick(message: Message, state: FSMContext):
         return
     if text in BTN_CANCEL_SET:
         await state.clear()
-        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        await answer_main_keyboard(message, lang)
         return
     data = await state.get_data()
     movie_id = data.get("movie_region_movie_id")
@@ -772,7 +780,7 @@ async def process_search(message: Message, state: FSMContext):
     raw = (message.text or "").strip()
     if raw in BTN_CANCEL_SET:
         await state.clear()
-        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        await answer_main_keyboard(message, lang)
         return
     if raw.startswith("/"):
         return
