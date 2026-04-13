@@ -3,6 +3,7 @@ Reeltrack bot: series + movie tracking with localization.
 """
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ SUPPORTED_LANGS = ("uk", "en", "de", "pl", "es", "pt", "tr", "fr", "ar", "it")
 DEFAULT_LANG = "uk"
 LOCALES_DIR = Path(__file__).parent / "locales"
 REGIONS = ("US", "GB", "DE", "PL", "UA", "FR", "ES", "IT", "TR")
+REGIONS_SET = set(REGIONS)
 
 
 def load_locales() -> dict[str, dict[str, str]]:
@@ -62,6 +64,16 @@ def all_button_texts(key: str) -> set[str]:
     return {T[l][key] for l in SUPPORTED_LANGS if key in T[l]}
 
 
+def resolve_language_code_from_button_text(text: str) -> str | None:
+    t = (text or "").strip()
+    if t.startswith("✅ "):
+        t = t[3:].strip()
+    for code in SUPPORTED_LANGS:
+        if T[code]["lang_name"] == t:
+            return code
+    return None
+
+
 _bot_token = (os.getenv("BOT_TOKEN") or "").strip()
 if not _bot_token:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -80,10 +92,23 @@ BTN_LIST_SET = all_button_texts("btn_list")
 BTN_HELP_SET = all_button_texts("btn_help")
 BTN_LANG_SET = all_button_texts("btn_language")
 BTN_CANCEL_SET = all_button_texts("btn_cancel")
+BTN_WATCHLIST_SERIES_SET = all_button_texts("btn_watchlist_series")
+BTN_WATCHLIST_MOVIES_SET = all_button_texts("btn_watchlist_movies")
+BTN_BACK_TO_MENU_SET = all_button_texts("btn_back_to_menu")
+BTN_TRACK_SET = all_button_texts("btn_track")
+BTN_TRACK_MOVIE_SET = all_button_texts("btn_track_movie")
+BTN_NEW_SEARCH_SET = all_button_texts("btn_new_search")
 
 
-class SearchStates(StatesGroup):
+class BotStates(StatesGroup):
     waiting_query = State()
+    watchlist_pick = State()
+    language_pick = State()
+    search_results_pick = State()
+    series_actions = State()
+    movie_actions = State()
+    season_pick = State()
+    movie_region_pick = State()
 
 
 async def user_lang(user_id: int) -> str:
@@ -105,13 +130,57 @@ def search_keyboard(lang: str) -> ReplyKeyboardMarkup:
     return b.as_markup(resize_keyboard=True)
 
 
-def kb_language_picker(current_lang: str) -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    for code in SUPPORTED_LANGS:
-        mark = "✅ " if code == current_lang else ""
-        b.button(text=f"{mark}{T[code]['lang_name']}", callback_data=f"lang:{code}")
-    b.adjust(2)
-    return b.as_markup()
+def watchlist_pick_reply_keyboard(lang: str) -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    b.row(
+        KeyboardButton(text=tr(lang, "btn_watchlist_series")),
+        KeyboardButton(text=tr(lang, "btn_watchlist_movies")),
+    )
+    b.row(KeyboardButton(text=tr(lang, "btn_back_to_menu")))
+    return b.as_markup(resize_keyboard=True)
+
+
+def language_pick_reply_keyboard(lang: str, current_ui_lang: str) -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    for i in range(0, len(SUPPORTED_LANGS), 2):
+        row = []
+        for code in SUPPORTED_LANGS[i : i + 2]:
+            mark = "✅ " if code == current_ui_lang else ""
+            row.append(KeyboardButton(text=f"{mark}{T[code]['lang_name']}"))
+        b.row(*row)
+    b.row(KeyboardButton(text=tr(lang, "btn_back_to_menu")))
+    return b.as_markup(resize_keyboard=True)
+
+
+def search_pick_reply_keyboard(lang: str, n: int) -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    nums = [str(i + 1) for i in range(n)]
+    for i in range(0, len(nums), 5):
+        b.row(*[KeyboardButton(text=x) for x in nums[i : i + 5]])
+    b.row(KeyboardButton(text=tr(lang, "btn_cancel")))
+    return b.as_markup(resize_keyboard=True)
+
+
+def series_actions_reply_keyboard(lang: str) -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    b.row(KeyboardButton(text=tr(lang, "btn_track")), KeyboardButton(text=tr(lang, "btn_new_search")))
+    b.row(KeyboardButton(text=tr(lang, "btn_cancel")))
+    return b.as_markup(resize_keyboard=True)
+
+
+def movie_actions_reply_keyboard(lang: str) -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    b.row(KeyboardButton(text=tr(lang, "btn_track_movie")), KeyboardButton(text=tr(lang, "btn_new_search")))
+    b.row(KeyboardButton(text=tr(lang, "btn_cancel")))
+    return b.as_markup(resize_keyboard=True)
+
+
+def movie_regions_reply_keyboard(lang: str) -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    for i in range(0, len(REGIONS), 3):
+        b.row(*[KeyboardButton(text=r) for r in REGIONS[i : i + 3]])
+    b.row(KeyboardButton(text=tr(lang, "btn_cancel")))
+    return b.as_markup(resize_keyboard=True)
 
 
 def kb_results(items: list[dict], lang: str, media: str) -> InlineKeyboardMarkup:
@@ -160,16 +229,6 @@ def kb_movie_regions(movie_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def kb_watchlist_kind(lang: str, has_series: bool, has_movies: bool) -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    if has_series:
-        b.button(text=tr(lang, "btn_watchlist_series"), callback_data="watchlist_show:tv")
-    if has_movies:
-        b.button(text=tr(lang, "btn_watchlist_movies"), callback_data="watchlist_show:movie")
-    b.adjust(2)
-    return b.as_markup()
-
-
 def kb_watchlist_series(items: list, lang: str) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for i in items:
@@ -186,6 +245,39 @@ def kb_watchlist_movies(items: list, lang: str) -> InlineKeyboardMarkup:
         b.button(text=tr(lang, "movie_watchlist_remove_item", movie_title=label, region=i["region"]), callback_data=f"remove_movie:{i['id']}")
     b.adjust(1)
     return b.as_markup()
+
+
+async def restore_main_keyboard(message: Message, lang: str):
+    await message.answer(tr(lang, "keyboard_bottom"), reply_markup=main_keyboard(lang))
+
+
+async def try_dispatch_main_menu(message: Message, state: FSMContext, text: str, lang: str) -> bool:
+    if text in BTN_SERIES_SET:
+        await state.clear()
+        await state.set_state(BotStates.waiting_query)
+        await state.update_data(media="tv")
+        await message.answer(tr(lang, "prompt_search_series"), parse_mode="HTML", reply_markup=search_keyboard(lang))
+        return True
+    if text in BTN_MOVIES_SET:
+        await state.clear()
+        await state.set_state(BotStates.waiting_query)
+        await state.update_data(media="movie")
+        await message.answer(tr(lang, "prompt_search_movies"), parse_mode="HTML", reply_markup=search_keyboard(lang))
+        return True
+    if text in BTN_LIST_SET:
+        await state.clear()
+        await render_watchlist(message, lang, state)
+        return True
+    if text in BTN_HELP_SET:
+        await state.clear()
+        await cmd_help(message, state)
+        return True
+    if text in BTN_LANG_SET:
+        await state.clear()
+        await state.set_state(BotStates.language_pick)
+        await message.answer(tr(lang, "lang_choose"), reply_markup=language_pick_reply_keyboard(lang, lang))
+        return True
+    return False
 
 
 async def _tmdb_series_display_title(series_id: int, lang: str, fallback: str) -> str:
@@ -247,6 +339,7 @@ async def render_watchlist_series(message: Message, lang: str, user_id: int):
     lines.append("")
     lines.append(tr(lang, "watchlist_remove_hint_series"))
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_series(series_enriched, lang))
+    await restore_main_keyboard(message, lang)
 
 
 async def render_watchlist_movies(message: Message, lang: str, user_id: int):
@@ -261,14 +354,16 @@ async def render_watchlist_movies(message: Message, lang: str, user_id: int):
     lines.append("")
     lines.append(tr(lang, "watchlist_remove_hint_movies"))
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_movies(movie_enriched, lang))
+    await restore_main_keyboard(message, lang)
 
 
-async def render_watchlist(message: Message, lang: str):
+async def render_watchlist(message: Message, lang: str, state: FSMContext):
     user_id = message.from_user.id
     series_items = await db.get_watchlist(user_id)
     movie_items = await db.get_movie_watchlist(user_id)
 
     if not series_items and not movie_items:
+        await state.clear()
         await message.answer(
             tr(
                 lang,
@@ -283,12 +378,119 @@ async def render_watchlist(message: Message, lang: str):
 
     has_s, has_m = bool(series_items), bool(movie_items)
     if has_s and has_m:
-        await message.answer(tr(lang, "watchlist_choose_kind"), reply_markup=kb_watchlist_kind(lang, True, True))
+        await state.set_state(BotStates.watchlist_pick)
+        await message.answer(tr(lang, "watchlist_choose_kind"), reply_markup=watchlist_pick_reply_keyboard(lang))
         return
+    await state.clear()
     if has_s:
         await render_watchlist_series(message, lang, user_id)
         return
     await render_watchlist_movies(message, lang, user_id)
+
+
+async def open_media_detail(message: Message, state: FSMContext, lang: str, media: str, tmdb_id: int):
+    await state.clear()
+    if media == "tv":
+        data = await tmdb.get_series(tmdb_id, language=lang)
+        if data.get("success") is False:
+            await message.answer(tr(lang, "series_not_found"), reply_markup=main_keyboard(lang))
+            return
+        caption = tmdb.format_series_info(data, language=lang, tr_func=tr)
+        poster = tmdb.poster_url(data.get("poster_path")) or PLACEHOLDER_POSTER
+        await message.answer_photo(photo=poster, caption=caption, parse_mode="HTML")
+        await state.set_state(BotStates.series_actions)
+        await state.update_data(detail_series_id=tmdb_id)
+        await message.answer(tr(lang, "pick_action_hint"), reply_markup=series_actions_reply_keyboard(lang))
+        return
+
+    data = await tmdb.get_movie(tmdb_id, language=lang)
+    if data.get("success") is False:
+        await message.answer(tr(lang, "movie_not_found"), reply_markup=main_keyboard(lang))
+        return
+    caption = tmdb.format_movie_info(data, language=lang, tr_func=tr)
+    poster = tmdb.poster_url(data.get("poster_path")) or PLACEHOLDER_POSTER
+    await message.answer_photo(photo=poster, caption=caption, parse_mode="HTML")
+    await state.set_state(BotStates.movie_actions)
+    await state.update_data(detail_movie_id=tmdb_id)
+    await message.answer(tr(lang, "pick_action_hint"), reply_markup=movie_actions_reply_keyboard(lang))
+
+
+async def prompt_season_choice_reply(message: Message, state: FSMContext, lang: str, series_id: int):
+    data = await tmdb.get_series(series_id, language=lang)
+    seasons = [s for s in data.get("seasons", []) if s.get("season_number", 0) > 0]
+    if not seasons:
+        await message.answer(tr(lang, "seasons_missing"), reply_markup=main_keyboard(lang))
+        await state.clear()
+        return
+    label_to_num: dict[str, int] = {}
+    b = ReplyKeyboardBuilder()
+    row: list[KeyboardButton] = []
+    for s in seasons:
+        n = s.get("season_number", 0)
+        label = tr(lang, "season_btn", n=n, ep=s.get("episode_count", "?"))
+        label_to_num[label] = n
+        row.append(KeyboardButton(text=label))
+        if len(row) >= 2:
+            b.row(*row)
+            row = []
+    if row:
+        b.row(*row)
+    b.row(KeyboardButton(text=tr(lang, "btn_cancel")))
+    await state.set_state(BotStates.season_pick)
+    await state.update_data(season_pick_series_id=series_id, season_label_to_num=label_to_num)
+    await message.answer(tr(lang, "choose_season"), parse_mode="HTML", reply_markup=b.as_markup(resize_keyboard=True))
+
+
+async def complete_season_track(message: Message, lang: str, user_id: int, username: str | None, full_name: str, series_id: int, season_number: int):
+    await db.upsert_user(user_id, username, full_name)
+    if await db.is_tracking(user_id, series_id, season_number):
+        await message.answer(tr(lang, "already_tracking"), reply_markup=main_keyboard(lang))
+        return
+    series = await tmdb.get_series(series_id, language=lang)
+    aired = await tmdb.count_aired_episodes(series_id, season_number, language=lang)
+    added = await db.add_to_watchlist(
+        user_id,
+        series_id,
+        series.get("name") or series.get("original_name") or tr(lang, "series_unknown"),
+        series.get("poster_path"),
+        season_number,
+        series.get("number_of_seasons", 1),
+        aired,
+    )
+    if added:
+        await message.answer(
+            tr(
+                lang,
+                "added_to_watchlist",
+                series_name=series.get("name") or series.get("original_name") or tr(lang, "series_unknown"),
+                season_number=season_number,
+                aired=aired,
+                minutes=CHECK_INTERVAL_MINUTES,
+            ),
+            parse_mode="HTML",
+            reply_markup=main_keyboard(lang),
+        )
+    else:
+        await message.answer(tr(lang, "add_failed"), reply_markup=main_keyboard(lang))
+
+
+async def complete_movie_track(message: Message, lang: str, user_id: int, username: str | None, full_name: str, movie_id: int, region: str):
+    await db.upsert_user(user_id, username, full_name)
+    if await db.is_tracking_movie(user_id, movie_id, region):
+        await message.answer(tr(lang, "already_tracking_movie", region=region), reply_markup=main_keyboard(lang))
+        return
+    movie = await tmdb.get_movie(movie_id, language=lang)
+    title = movie.get("title") or movie.get("original_title") or tr(lang, "movie_unknown")
+    added = await db.add_movie_to_watchlist(user_id, movie_id, title, movie.get("poster_path"), region)
+    if not added:
+        await message.answer(tr(lang, "add_failed"), reply_markup=main_keyboard(lang))
+        return
+    release_date = await tmdb.get_movie_release_date(movie_id, region) or (movie.get("release_date") or "")[:10] or "—"
+    await message.answer(
+        tr(lang, "added_movie_watchlist", movie_title=title, region=region, release_date=release_date),
+        parse_mode="HTML",
+        reply_markup=main_keyboard(lang),
+    )
 
 
 @dp.message(CommandStart())
@@ -325,7 +527,162 @@ async def cmd_cancel(message: Message, state: FSMContext):
 @dp.message(Command("list"))
 async def cmd_list(message: Message, state: FSMContext):
     await state.clear()
-    await render_watchlist(message, await user_lang(message.from_user.id))
+    lang = await user_lang(message.from_user.id)
+    await render_watchlist(message, lang, state)
+
+
+@dp.message(StateFilter(BotStates.watchlist_pick), F.text)
+async def handle_watchlist_pick(message: Message, state: FSMContext):
+    lang = await user_lang(message.from_user.id)
+    text = (message.text or "").strip()
+    if await try_dispatch_main_menu(message, state, text, lang):
+        return
+    if text in BTN_BACK_TO_MENU_SET:
+        await state.clear()
+        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        return
+    if text in BTN_WATCHLIST_SERIES_SET:
+        await state.clear()
+        await render_watchlist_series(message, lang, message.from_user.id)
+        return
+    if text in BTN_WATCHLIST_MOVIES_SET:
+        await state.clear()
+        await render_watchlist_movies(message, lang, message.from_user.id)
+        return
+    await message.answer(tr(lang, "unknown_cmd"), reply_markup=watchlist_pick_reply_keyboard(lang))
+
+
+@dp.message(StateFilter(BotStates.language_pick), F.text)
+async def handle_language_pick(message: Message, state: FSMContext):
+    lang = await user_lang(message.from_user.id)
+    text = (message.text or "").strip()
+    if await try_dispatch_main_menu(message, state, text, lang):
+        return
+    if text in BTN_BACK_TO_MENU_SET:
+        await state.clear()
+        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        return
+    code = resolve_language_code_from_button_text(text)
+    if code:
+        await db.set_user_language(message.from_user.id, code)
+        lang = await user_lang(message.from_user.id)
+        await state.clear()
+        await message.answer(tr(lang, "lang_changed", lang_name=T[lang]["lang_name"]), parse_mode="HTML", reply_markup=main_keyboard(lang))
+        return
+    await message.answer(tr(lang, "unknown_cmd"), reply_markup=language_pick_reply_keyboard(lang, lang))
+
+
+@dp.message(StateFilter(BotStates.search_results_pick), F.text)
+async def handle_search_results_pick(message: Message, state: FSMContext):
+    lang = await user_lang(message.from_user.id)
+    text = (message.text or "").strip()
+    if await try_dispatch_main_menu(message, state, text, lang):
+        return
+    if text in BTN_CANCEL_SET:
+        await state.clear()
+        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        return
+    data = await state.get_data()
+    ids: list = data.get("search_pick_ids") or []
+    media = data.get("search_pick_media", "tv")
+    if text.isdigit():
+        idx = int(text) - 1
+        if 0 <= idx < len(ids):
+            await open_media_detail(message, state, lang, media, ids[idx])
+            return
+    await message.answer(tr(lang, "unknown_cmd"), reply_markup=search_pick_reply_keyboard(lang, len(ids)))
+
+
+@dp.message(StateFilter(BotStates.series_actions), F.text)
+async def handle_series_actions(message: Message, state: FSMContext):
+    lang = await user_lang(message.from_user.id)
+    text = (message.text or "").strip()
+    if await try_dispatch_main_menu(message, state, text, lang):
+        return
+    if text in BTN_CANCEL_SET:
+        await state.clear()
+        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        return
+    data = await state.get_data()
+    series_id = data.get("detail_series_id")
+    if text in BTN_TRACK_SET and series_id:
+        await prompt_season_choice_reply(message, state, lang, int(series_id))
+        return
+    if text in BTN_NEW_SEARCH_SET:
+        await state.clear()
+        await state.set_state(BotStates.waiting_query)
+        await state.update_data(media="tv")
+        await message.answer(tr(lang, "prompt_search_series"), parse_mode="HTML", reply_markup=search_keyboard(lang))
+        return
+    await message.answer(tr(lang, "unknown_cmd"), reply_markup=series_actions_reply_keyboard(lang))
+
+
+@dp.message(StateFilter(BotStates.movie_actions), F.text)
+async def handle_movie_actions(message: Message, state: FSMContext):
+    lang = await user_lang(message.from_user.id)
+    text = (message.text or "").strip()
+    if await try_dispatch_main_menu(message, state, text, lang):
+        return
+    if text in BTN_CANCEL_SET:
+        await state.clear()
+        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        return
+    data = await state.get_data()
+    movie_id = data.get("detail_movie_id")
+    if text in BTN_TRACK_MOVIE_SET and movie_id:
+        await state.set_state(BotStates.movie_region_pick)
+        await state.update_data(movie_region_movie_id=int(movie_id))
+        await message.answer(tr(lang, "choose_region"), reply_markup=movie_regions_reply_keyboard(lang))
+        return
+    if text in BTN_NEW_SEARCH_SET:
+        await state.clear()
+        await state.set_state(BotStates.waiting_query)
+        await state.update_data(media="movie")
+        await message.answer(tr(lang, "prompt_search_movies"), parse_mode="HTML", reply_markup=search_keyboard(lang))
+        return
+    await message.answer(tr(lang, "unknown_cmd"), reply_markup=movie_actions_reply_keyboard(lang))
+
+
+@dp.message(StateFilter(BotStates.season_pick), F.text)
+async def handle_season_pick(message: Message, state: FSMContext):
+    lang = await user_lang(message.from_user.id)
+    text = (message.text or "").strip()
+    if await try_dispatch_main_menu(message, state, text, lang):
+        return
+    if text in BTN_CANCEL_SET:
+        await state.clear()
+        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        return
+    data = await state.get_data()
+    mapping: dict = data.get("season_label_to_num") or {}
+    series_id = data.get("season_pick_series_id")
+    if text in mapping and series_id:
+        await state.clear()
+        u = message.from_user
+        await complete_season_track(message, lang, u.id, u.username, u.full_name, int(series_id), int(mapping[text]))
+        return
+    await state.clear()
+    await message.answer(tr(lang, "unknown_cmd"), reply_markup=main_keyboard(lang))
+
+
+@dp.message(StateFilter(BotStates.movie_region_pick), F.text)
+async def handle_movie_region_pick(message: Message, state: FSMContext):
+    lang = await user_lang(message.from_user.id)
+    text = (message.text or "").strip()
+    if await try_dispatch_main_menu(message, state, text, lang):
+        return
+    if text in BTN_CANCEL_SET:
+        await state.clear()
+        await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
+        return
+    data = await state.get_data()
+    movie_id = data.get("movie_region_movie_id")
+    if text in REGIONS_SET and movie_id:
+        await state.clear()
+        u = message.from_user
+        await complete_movie_track(message, lang, u.id, u.username, u.full_name, int(movie_id), text)
+        return
+    await message.answer(tr(lang, "unknown_cmd"), reply_markup=movie_regions_reply_keyboard(lang))
 
 
 @dp.message(StateFilter(default_state), F.text)
@@ -334,18 +691,18 @@ async def handle_menu(message: Message, state: FSMContext):
     lang = await user_lang(message.from_user.id)
 
     if text in BTN_SERIES_SET:
-        await state.set_state(SearchStates.waiting_query)
+        await state.set_state(BotStates.waiting_query)
         await state.update_data(media="tv")
         await message.answer(tr(lang, "prompt_search_series"), parse_mode="HTML", reply_markup=search_keyboard(lang))
         return
     if text in BTN_MOVIES_SET:
-        await state.set_state(SearchStates.waiting_query)
+        await state.set_state(BotStates.waiting_query)
         await state.update_data(media="movie")
         await message.answer(tr(lang, "prompt_search_movies"), parse_mode="HTML", reply_markup=search_keyboard(lang))
         return
     if text in BTN_LIST_SET:
         await state.clear()
-        await render_watchlist(message, lang)
+        await render_watchlist(message, lang, state)
         return
     if text in BTN_HELP_SET:
         await state.clear()
@@ -353,7 +710,8 @@ async def handle_menu(message: Message, state: FSMContext):
         return
     if text in BTN_LANG_SET:
         await state.clear()
-        await message.answer(tr(lang, "lang_choose"), reply_markup=kb_language_picker(lang))
+        await state.set_state(BotStates.language_pick)
+        await message.answer(tr(lang, "lang_choose"), reply_markup=language_pick_reply_keyboard(lang, lang))
         return
 
     if text.startswith("/"):
@@ -372,19 +730,7 @@ async def cb_lang(call: CallbackQuery):
     await call.message.answer(tr(lang, "lang_changed", lang_name=T[lang]["lang_name"]), parse_mode="HTML", reply_markup=main_keyboard(lang))
 
 
-@dp.callback_query(F.data.startswith("watchlist_show:"))
-async def cb_watchlist_show(call: CallbackQuery):
-    lang = await user_lang(call.from_user.id)
-    kind = call.data.split(":", 1)[1]
-    await call.answer()
-    uid = call.from_user.id
-    if kind == "tv":
-        await render_watchlist_series(call.message, lang, uid)
-    else:
-        await render_watchlist_movies(call.message, lang, uid)
-
-
-@dp.message(StateFilter(SearchStates.waiting_query), F.text)
+@dp.message(StateFilter(BotStates.waiting_query), F.text)
 async def process_search(message: Message, state: FSMContext):
     lang = await user_lang(message.from_user.id)
     raw = (message.text or "").strip()
@@ -402,11 +748,21 @@ async def process_search(message: Message, state: FSMContext):
     media = data.get("media", "tv")
     await message.answer(tr(lang, "searching"))
     results = await (tmdb.search_series(raw, language=lang) if media == "tv" else tmdb.search_movies(raw, language=lang))
-    await state.clear()
     if not results:
+        await state.clear()
         await message.answer(tr(lang, "search_empty"), reply_markup=main_keyboard(lang))
         return
-    await message.answer(tr(lang, "choose_series" if media == "tv" else "choose_movie"), reply_markup=kb_results(results, lang, media))
+    n = min(len(results), 10)
+    ids = [results[i]["id"] for i in range(n)]
+    lines = [tr(lang, "choose_series" if media == "tv" else "choose_movie")]
+    for i, item in enumerate(results[:n], 1):
+        title = item.get("name") or item.get("title") or item.get("original_name") or item.get("original_title") or tr(lang, "series_unknown")
+        year = (item.get("first_air_date") or item.get("release_date") or "")[:4]
+        line = f"{i}. {html.escape(title)}" + (f" ({year})" if year else "")
+        lines.append(line)
+    await state.set_state(BotStates.search_results_pick)
+    await state.update_data(search_pick_ids=ids, search_pick_media=media)
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=search_pick_reply_keyboard(lang, n))
 
 
 @dp.callback_query(F.data.startswith("open:"))
@@ -435,6 +791,24 @@ async def cb_open(call: CallbackQuery):
     await call.message.answer_photo(photo=poster, caption=caption, parse_mode="HTML", reply_markup=markup)
 
 
+@dp.callback_query(F.data == "search:new:tv")
+async def cb_search_new_tv(call: CallbackQuery, state: FSMContext):
+    lang = await user_lang(call.from_user.id)
+    await call.answer()
+    await state.set_state(BotStates.waiting_query)
+    await state.update_data(media="tv")
+    await call.message.answer(tr(lang, "prompt_search_series"), parse_mode="HTML", reply_markup=search_keyboard(lang))
+
+
+@dp.callback_query(F.data == "search:new:movie")
+async def cb_search_new_movie(call: CallbackQuery, state: FSMContext):
+    lang = await user_lang(call.from_user.id)
+    await call.answer()
+    await state.set_state(BotStates.waiting_query)
+    await state.update_data(media="movie")
+    await call.message.answer(tr(lang, "prompt_search_movies"), parse_mode="HTML", reply_markup=search_keyboard(lang))
+
+
 @dp.callback_query(F.data.startswith("track_series:"))
 async def cb_track_series(call: CallbackQuery):
     lang = await user_lang(call.from_user.id)
@@ -454,15 +828,8 @@ async def cb_add_season(call: CallbackQuery):
     _, sid, sn = call.data.split(":")
     series_id, season_number = int(sid), int(sn)
     await call.answer(tr(lang, "searching"))
-    await db.upsert_user(call.from_user.id, call.from_user.username, call.from_user.full_name)
-    if await db.is_tracking(call.from_user.id, series_id, season_number):
-        await call.message.answer(tr(lang, "already_tracking"))
-        return
-    series = await tmdb.get_series(series_id, language=lang)
-    aired = await tmdb.count_aired_episodes(series_id, season_number, language=lang)
-    added = await db.add_to_watchlist(call.from_user.id, series_id, series.get("name") or series.get("original_name") or tr(lang, "series_unknown"), series.get("poster_path"), season_number, series.get("number_of_seasons", 1), aired)
-    if added:
-        await call.message.answer(tr(lang, "added_to_watchlist", series_name=series.get("name") or series.get("original_name") or tr(lang, "series_unknown"), season_number=season_number, aired=aired, minutes=CHECK_INTERVAL_MINUTES), parse_mode="HTML", reply_markup=main_keyboard(lang))
+    u = call.from_user
+    await complete_season_track(call.message, lang, u.id, u.username, u.full_name, series_id, season_number)
 
 
 @dp.callback_query(F.data.startswith("track_movie:"))
@@ -479,17 +846,8 @@ async def cb_movie_region(call: CallbackQuery):
     _, mid, region = call.data.split(":")
     movie_id = int(mid)
     await call.answer()
-    if await db.is_tracking_movie(call.from_user.id, movie_id, region):
-        await call.message.answer(tr(lang, "already_tracking_movie", region=region), reply_markup=main_keyboard(lang))
-        return
-    movie = await tmdb.get_movie(movie_id, language=lang)
-    title = movie.get("title") or movie.get("original_title") or tr(lang, "movie_unknown")
-    added = await db.add_movie_to_watchlist(call.from_user.id, movie_id, title, movie.get("poster_path"), region)
-    if not added:
-        await call.message.answer(tr(lang, "add_failed"), reply_markup=main_keyboard(lang))
-        return
-    release_date = await tmdb.get_movie_release_date(movie_id, region) or (movie.get("release_date") or "")[:10] or "—"
-    await call.message.answer(tr(lang, "added_movie_watchlist", movie_title=title, region=region, release_date=release_date), parse_mode="HTML", reply_markup=main_keyboard(lang))
+    u = call.from_user
+    await complete_movie_track(call.message, lang, u.id, u.username, u.full_name, movie_id, region)
 
 
 @dp.callback_query(F.data.startswith("remove_series:"))
@@ -540,7 +898,6 @@ def plural_key_uk(n: int) -> str:
 
 
 async def check_updates():
-    # Series episodes
     for row in await db.get_all_tracked():
         try:
             lang = row.get("language") or DEFAULT_LANG
@@ -571,7 +928,6 @@ async def check_updates():
         except Exception as exc:
             log.error("Series check error: %s", exc)
 
-    # Movie release alerts
     today_iso = date.today().isoformat()
     for row in await db.get_all_tracked_movies():
         try:
