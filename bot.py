@@ -1,4 +1,4 @@
-﻿"""
+"""
 Series Tracker Bot
 ──────────────────
 ReplyKeyboard menu + chat search + optional inline search + localized UI.
@@ -47,7 +47,8 @@ LOCALES_DIR = Path(__file__).parent / "locales"
 def load_locales() -> dict[str, dict[str, str]]:
     data: dict[str, dict[str, str]] = {}
     for code in SUPPORTED_LANGS:
-        with (LOCALES_DIR / f"{code}.json").open("r", encoding="utf-8") as f:
+        # utf-8-sig tolerates BOM from Windows editors/PowerShell writes
+        with (LOCALES_DIR / f"{code}.json").open("r", encoding="utf-8-sig") as f:
             data[code] = json.load(f)
     return data
 
