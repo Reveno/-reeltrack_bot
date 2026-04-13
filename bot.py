@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup, default_state
@@ -112,14 +113,26 @@ _NORM_BACK_MENU_TEXTS = frozenset(
 )
 
 
+def _back_menu_label_after_arrow(lang: str) -> str:
+    full = normalize_reply_button_text(tr(lang, "btn_back_to_menu"))
+    parts = full.split(None, 1)
+    return parts[1] if len(parts) > 1 else ""
+
+
+_BACK_MENU_LABEL_REST = frozenset(
+    x for x in (_back_menu_label_after_arrow(l) for l in SUPPORTED_LANGS) if len(x) >= 2
+)
+
+
 def is_back_to_menu_text(text: str) -> bool:
+    """Match back button even if the client uses a different arrow glyph than in locales."""
     nt = normalize_reply_button_text(text)
     if nt in _NORM_BACK_MENU_TEXTS:
         return True
-    if nt and nt[0] in "↩↪":
-        swapped = ("↩" if nt[0] == "↪" else "↪") + nt[1:]
-        return swapped in _NORM_BACK_MENU_TEXTS
-    return False
+    parts = nt.split(None, 1)
+    if len(parts) < 2:
+        return False
+    return parts[1] in _BACK_MENU_LABEL_REST
 
 
 class BotStates(StatesGroup):
@@ -147,12 +160,33 @@ def main_keyboard(lang: str) -> ReplyKeyboardMarkup:
     return b.as_markup(resize_keyboard=True)
 
 
-# Telegram requires non-empty text; NBSP avoids visible wording (ZWSP-only can be rejected as empty).
-_KB_PLACEHOLDER = "\u00a0"
+# Telegram requires non-empty text; try quiet placeholders first, then fall back.
+_KB_PLACEHOLDERS = ("\u00a0", "\u2060", ".")
 
 
-async def answer_main_keyboard(message: Message, lang: str) -> None:
-    await message.answer(_KB_PLACEHOLDER, reply_markup=main_keyboard(lang), disable_notification=True)
+async def delete_stored_prompt(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    mid = data.get("ui_prompt_message_id")
+    if not mid:
+        return
+    try:
+        await message.bot.delete_message(message.chat.id, mid)
+    except TelegramBadRequest:
+        pass
+    await state.update_data(ui_prompt_message_id=None)
+
+
+async def answer_main_keyboard(message: Message, lang: str, *, state: FSMContext | None = None) -> None:
+    if state is not None:
+        await delete_stored_prompt(message, state)
+    kb = main_keyboard(lang)
+    for chunk in _KB_PLACEHOLDERS:
+        try:
+            await message.answer(chunk, reply_markup=kb, disable_notification=True)
+            return
+        except TelegramBadRequest as e:
+            log.warning("main keyboard placeholder failed: %s", e)
+    await message.answer(tr(lang, "cancelled"), reply_markup=kb, disable_notification=True)
 
 
 def search_keyboard(lang: str) -> ReplyKeyboardMarkup:
@@ -304,7 +338,8 @@ async def try_dispatch_main_menu(message: Message, state: FSMContext, text: str,
     if text in BTN_LANG_SET:
         await state.clear()
         await state.set_state(BotStates.language_pick)
-        await message.answer(tr(lang, "lang_choose"), reply_markup=language_pick_reply_keyboard(lang, lang))
+        sent = await message.answer(tr(lang, "lang_choose"), reply_markup=language_pick_reply_keyboard(lang, lang))
+        await state.update_data(ui_prompt_message_id=sent.message_id)
         return True
     return False
 
@@ -351,7 +386,10 @@ async def render_watchlist_series(message: Message, lang: str, user_id: int, sta
     series_items = await db.get_watchlist(user_id)
     if not series_items:
         await state.set_state(BotStates.watchlist_pick)
-        await message.answer(tr(lang, "watchlist_empty_series"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang))
+        sent = await message.answer(
+            tr(lang, "watchlist_empty_series"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang)
+        )
+        await state.update_data(ui_prompt_message_id=sent.message_id)
         return
     series_enriched = await enrich_series_display_titles(series_items, lang)
     n = len(series_enriched)
@@ -377,7 +415,10 @@ async def render_watchlist_movies(message: Message, lang: str, user_id: int, sta
     movie_items = await db.get_movie_watchlist(user_id)
     if not movie_items:
         await state.set_state(BotStates.watchlist_pick)
-        await message.answer(tr(lang, "watchlist_empty_movies"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang))
+        sent = await message.answer(
+            tr(lang, "watchlist_empty_movies"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang)
+        )
+        await state.update_data(ui_prompt_message_id=sent.message_id)
         return
     movie_enriched = await enrich_movie_display_titles(movie_items, lang)
     n = len(movie_enriched)
@@ -417,7 +458,8 @@ async def render_watchlist(message: Message, lang: str, state: FSMContext):
         return
 
     await state.set_state(BotStates.watchlist_pick)
-    await message.answer(tr(lang, "watchlist_choose_kind"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang))
+    sent = await message.answer(tr(lang, "watchlist_choose_kind"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang))
+    await state.update_data(ui_prompt_message_id=sent.message_id)
 
 
 async def open_media_detail(message: Message, state: FSMContext, lang: str, media: str, tmdb_id: int):
@@ -551,8 +593,9 @@ async def cmd_help(message: Message, state: FSMContext):
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
-    await state.clear()
     lang = await user_lang(message.from_user.id)
+    await delete_stored_prompt(message, state)
+    await state.clear()
     await message.answer(tr(lang, "cancelled"), reply_markup=main_keyboard(lang))
 
 
@@ -570,14 +613,16 @@ async def handle_watchlist_pick(message: Message, state: FSMContext):
     if await try_dispatch_main_menu(message, state, text, lang):
         return
     if is_back_to_menu_text(text):
+        await answer_main_keyboard(message, lang, state=state)
         await state.clear()
-        await answer_main_keyboard(message, lang)
         return
     if text in BTN_WATCHLIST_SERIES_SET:
+        await delete_stored_prompt(message, state)
         await state.clear()
         await render_watchlist_series(message, lang, message.from_user.id, state)
         return
     if text in BTN_WATCHLIST_MOVIES_SET:
+        await delete_stored_prompt(message, state)
         await state.clear()
         await render_watchlist_movies(message, lang, message.from_user.id, state)
         return
@@ -593,7 +638,10 @@ async def handle_watchlist_remove_pick(message: Message, state: FSMContext):
         return
     if text in BTN_WATCHLIST_CATEGORIES_SET:
         await state.set_state(BotStates.watchlist_pick)
-        await message.answer(tr(lang, "watchlist_choose_kind"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang))
+        sent = await message.answer(
+            tr(lang, "watchlist_choose_kind"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang)
+        )
+        await state.update_data(ui_prompt_message_id=sent.message_id)
         return
     data = await state.get_data()
     ids: list = data.get("wl_remove_ids") or []
@@ -623,8 +671,8 @@ async def handle_language_pick(message: Message, state: FSMContext):
     if await try_dispatch_main_menu(message, state, text, lang):
         return
     if is_back_to_menu_text(text):
+        await answer_main_keyboard(message, lang, state=state)
         await state.clear()
-        await answer_main_keyboard(message, lang)
         return
     code = resolve_language_code_from_button_text(text)
     if code:
@@ -643,8 +691,8 @@ async def handle_search_results_pick(message: Message, state: FSMContext):
     if await try_dispatch_main_menu(message, state, text, lang):
         return
     if text in BTN_CANCEL_SET:
+        await answer_main_keyboard(message, lang, state=state)
         await state.clear()
-        await answer_main_keyboard(message, lang)
         return
     data = await state.get_data()
     ids: list = data.get("search_pick_ids") or []
@@ -664,8 +712,8 @@ async def handle_series_actions(message: Message, state: FSMContext):
     if await try_dispatch_main_menu(message, state, text, lang):
         return
     if text in BTN_CANCEL_SET:
+        await answer_main_keyboard(message, lang, state=state)
         await state.clear()
-        await answer_main_keyboard(message, lang)
         return
     data = await state.get_data()
     series_id = data.get("detail_series_id")
@@ -688,8 +736,8 @@ async def handle_movie_actions(message: Message, state: FSMContext):
     if await try_dispatch_main_menu(message, state, text, lang):
         return
     if text in BTN_CANCEL_SET:
+        await answer_main_keyboard(message, lang, state=state)
         await state.clear()
-        await answer_main_keyboard(message, lang)
         return
     data = await state.get_data()
     movie_id = data.get("detail_movie_id")
@@ -714,8 +762,8 @@ async def handle_season_pick(message: Message, state: FSMContext):
     if await try_dispatch_main_menu(message, state, text, lang):
         return
     if text in BTN_CANCEL_SET:
+        await answer_main_keyboard(message, lang, state=state)
         await state.clear()
-        await answer_main_keyboard(message, lang)
         return
     data = await state.get_data()
     mapping: dict = data.get("season_label_to_num") or {}
@@ -736,8 +784,8 @@ async def handle_movie_region_pick(message: Message, state: FSMContext):
     if await try_dispatch_main_menu(message, state, text, lang):
         return
     if text in BTN_CANCEL_SET:
+        await answer_main_keyboard(message, lang, state=state)
         await state.clear()
-        await answer_main_keyboard(message, lang)
         return
     data = await state.get_data()
     movie_id = data.get("movie_region_movie_id")
@@ -753,6 +801,10 @@ async def handle_movie_region_pick(message: Message, state: FSMContext):
 async def handle_menu(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     lang = await user_lang(message.from_user.id)
+
+    if is_back_to_menu_text(text):
+        await answer_main_keyboard(message, lang, state=state)
+        return
 
     if text in BTN_SERIES_SET:
         await state.set_state(BotStates.waiting_query)
@@ -775,7 +827,8 @@ async def handle_menu(message: Message, state: FSMContext):
     if text in BTN_LANG_SET:
         await state.clear()
         await state.set_state(BotStates.language_pick)
-        await message.answer(tr(lang, "lang_choose"), reply_markup=language_pick_reply_keyboard(lang, lang))
+        sent = await message.answer(tr(lang, "lang_choose"), reply_markup=language_pick_reply_keyboard(lang, lang))
+        await state.update_data(ui_prompt_message_id=sent.message_id)
         return
 
     if text.startswith("/"):
@@ -799,8 +852,8 @@ async def process_search(message: Message, state: FSMContext):
     lang = await user_lang(message.from_user.id)
     raw = (message.text or "").strip()
     if raw in BTN_CANCEL_SET:
+        await answer_main_keyboard(message, lang, state=state)
         await state.clear()
-        await answer_main_keyboard(message, lang)
         return
     if raw.startswith("/"):
         return
