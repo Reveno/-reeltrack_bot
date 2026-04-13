@@ -160,6 +160,16 @@ def kb_movie_regions(movie_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def kb_watchlist_kind(lang: str, has_series: bool, has_movies: bool) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    if has_series:
+        b.button(text=tr(lang, "btn_watchlist_series"), callback_data="watchlist_show:tv")
+    if has_movies:
+        b.button(text=tr(lang, "btn_watchlist_movies"), callback_data="watchlist_show:movie")
+    b.adjust(2)
+    return b.as_markup()
+
+
 def kb_watchlist_series(items: list, lang: str) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for i in items:
@@ -216,9 +226,47 @@ async def enrich_movie_display_titles(items: list[dict], lang: str) -> list[dict
     return [{**i, "display_title": t} for i, t in zip(items, titles)]
 
 
+async def render_watchlist_series(message: Message, lang: str, user_id: int):
+    series_items = await db.get_watchlist(user_id)
+    if not series_items:
+        await message.answer(tr(lang, "watchlist_empty_series"), parse_mode="HTML", reply_markup=main_keyboard(lang))
+        return
+    series_enriched = await enrich_series_display_titles(series_items, lang)
+    lines = [tr(lang, "watchlist_header"), ""]
+    for i in series_enriched:
+        ep = tr(lang, "watchlist_episode_info", episode=i["last_notified_episode"])
+        lines.append(
+            tr(
+                lang,
+                "watchlist_row",
+                series_name=i["display_title"],
+                season_number=i["season_number"],
+                ep_info=ep,
+            )
+        )
+    lines.append("")
+    lines.append(tr(lang, "watchlist_remove_hint_series"))
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_series(series_enriched, lang))
+
+
+async def render_watchlist_movies(message: Message, lang: str, user_id: int):
+    movie_items = await db.get_movie_watchlist(user_id)
+    if not movie_items:
+        await message.answer(tr(lang, "watchlist_empty_movies"), parse_mode="HTML", reply_markup=main_keyboard(lang))
+        return
+    movie_enriched = await enrich_movie_display_titles(movie_items, lang)
+    lines = [tr(lang, "movie_watchlist_header"), ""]
+    for i in movie_enriched:
+        lines.append(tr(lang, "movie_watchlist_row", movie_title=i["display_title"], region=i["region"]))
+    lines.append("")
+    lines.append(tr(lang, "watchlist_remove_hint_movies"))
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_movies(movie_enriched, lang))
+
+
 async def render_watchlist(message: Message, lang: str):
-    series_items = await db.get_watchlist(message.from_user.id)
-    movie_items = await db.get_movie_watchlist(message.from_user.id)
+    user_id = message.from_user.id
+    series_items = await db.get_watchlist(user_id)
+    movie_items = await db.get_movie_watchlist(user_id)
 
     if not series_items and not movie_items:
         await message.answer(
@@ -233,32 +281,14 @@ async def render_watchlist(message: Message, lang: str):
         )
         return
 
-    if series_items:
-        series_enriched = await enrich_series_display_titles(series_items, lang)
-        lines = [tr(lang, "watchlist_header"), ""]
-        for i in series_enriched:
-            ep = tr(lang, "watchlist_episode_info", episode=i["last_notified_episode"])
-            lines.append(
-                tr(
-                    lang,
-                    "watchlist_row",
-                    series_name=i["display_title"],
-                    season_number=i["season_number"],
-                    ep_info=ep,
-                )
-            )
-        lines.append("")
-        lines.append(tr(lang, "watchlist_remove_hint_series"))
-        await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_series(series_enriched, lang))
-
-    if movie_items:
-        movie_enriched = await enrich_movie_display_titles(movie_items, lang)
-        lines = [tr(lang, "movie_watchlist_header"), ""]
-        for i in movie_enriched:
-            lines.append(tr(lang, "movie_watchlist_row", movie_title=i["display_title"], region=i["region"]))
-        lines.append("")
-        lines.append(tr(lang, "watchlist_remove_hint_movies"))
-        await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb_watchlist_movies(movie_enriched, lang))
+    has_s, has_m = bool(series_items), bool(movie_items)
+    if has_s and has_m:
+        await message.answer(tr(lang, "watchlist_choose_kind"), reply_markup=kb_watchlist_kind(lang, True, True))
+        return
+    if has_s:
+        await render_watchlist_series(message, lang, user_id)
+        return
+    await render_watchlist_movies(message, lang, user_id)
 
 
 @dp.message(CommandStart())
@@ -340,6 +370,18 @@ async def cb_lang(call: CallbackQuery):
     lang = await user_lang(call.from_user.id)
     await call.answer()
     await call.message.answer(tr(lang, "lang_changed", lang_name=T[lang]["lang_name"]), parse_mode="HTML", reply_markup=main_keyboard(lang))
+
+
+@dp.callback_query(F.data.startswith("watchlist_show:"))
+async def cb_watchlist_show(call: CallbackQuery):
+    lang = await user_lang(call.from_user.id)
+    kind = call.data.split(":", 1)[1]
+    await call.answer()
+    uid = call.from_user.id
+    if kind == "tv":
+        await render_watchlist_series(call.message, lang, uid)
+    else:
+        await render_watchlist_movies(call.message, lang, uid)
 
 
 @dp.message(StateFilter(SearchStates.waiting_query), F.text)
