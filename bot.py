@@ -4,6 +4,7 @@ Reeltrack bot: series + movie tracking with localization.
 
 import asyncio
 import html
+import re
 import json
 import logging
 import os
@@ -144,11 +145,22 @@ def watchlist_pick_reply_keyboard(lang: str) -> ReplyKeyboardMarkup:
 
 def watchlist_remove_reply_keyboard(lang: str, n: int) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
-    nums = [str(i + 1) for i in range(n)]
-    for i in range(0, len(nums), 5):
-        b.row(*[KeyboardButton(text=x) for x in nums[i : i + 5]])
+    nums = list(range(1, n + 1))
+    for i in range(0, len(nums), 4):
+        b.row(*[KeyboardButton(text=tr(lang, "watchlist_remove_btn", num=x)) for x in nums[i : i + 4]])
     b.row(KeyboardButton(text=tr(lang, "btn_watchlist_categories")))
     return b.as_markup(resize_keyboard=True)
+
+
+def parse_watchlist_remove_slot(text: str) -> int | None:
+    """1-based index from button '🗑 3' or plain '3'."""
+    t = (text or "").strip()
+    m = re.match(r"^🗑\uFE0F?\s*(\d+)$", t)
+    if m:
+        return int(m.group(1))
+    if t.isdigit():
+        return int(t)
+    return None
 
 
 def language_pick_reply_keyboard(lang: str, current_ui_lang: str) -> ReplyKeyboardMarkup:
@@ -314,18 +326,25 @@ async def render_watchlist_series(message: Message, lang: str, user_id: int, sta
         await message.answer(tr(lang, "watchlist_empty_series"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang))
         return
     series_enriched = await enrich_series_display_titles(series_items, lang)
-    lines = [tr(lang, "watchlist_header"), "", tr(lang, "watchlist_remove_by_number"), ""]
+    n = len(series_enriched)
+    lines = [
+        tr(lang, "watchlist_header_compact_series", count=n),
+        "",
+    ]
     for idx, i in enumerate(series_enriched, 1):
         ep = tr(lang, "watchlist_episode_info", episode=i["last_notified_episode"])
-        row = tr(
-            lang,
-            "watchlist_row",
-            series_name=i["display_title"],
-            season_number=i["season_number"],
-            ep_info=ep,
+        title = html.escape(i["display_title"] or "")
+        lines.append(
+            tr(
+                lang,
+                "watchlist_line_tv",
+                n=idx,
+                series_name=title,
+                sn=i["season_number"],
+                ep_info=ep,
+            )
         )
-        lines.append(f"{idx}. {row}")
-    n = len(series_enriched)
+    lines.extend(["", tr(lang, "watchlist_remove_footer_series")])
     await state.set_state(BotStates.watchlist_remove_pick)
     await state.update_data(wl_remove_kind="tv", wl_remove_ids=[i["id"] for i in series_enriched])
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=watchlist_remove_reply_keyboard(lang, n))
@@ -338,11 +357,23 @@ async def render_watchlist_movies(message: Message, lang: str, user_id: int, sta
         await message.answer(tr(lang, "watchlist_empty_movies"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang))
         return
     movie_enriched = await enrich_movie_display_titles(movie_items, lang)
-    lines = [tr(lang, "movie_watchlist_header"), "", tr(lang, "watchlist_remove_by_number_movies"), ""]
-    for idx, i in enumerate(movie_enriched, 1):
-        row = tr(lang, "movie_watchlist_row", movie_title=i["display_title"], region=i["region"])
-        lines.append(f"{idx}. {row}")
     n = len(movie_enriched)
+    lines = [
+        tr(lang, "watchlist_header_compact_movies", count=n),
+        "",
+    ]
+    for idx, i in enumerate(movie_enriched, 1):
+        title = html.escape(i["display_title"] or "")
+        lines.append(
+            tr(
+                lang,
+                "watchlist_line_movie",
+                n=idx,
+                movie_title=title,
+                region=html.escape(str(i["region"])),
+            )
+        )
+    lines.extend(["", tr(lang, "watchlist_remove_footer_movies")])
     await state.set_state(BotStates.watchlist_remove_pick)
     await state.update_data(wl_remove_kind="movie", wl_remove_ids=[i["id"] for i in movie_enriched])
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=watchlist_remove_reply_keyboard(lang, n))
@@ -549,8 +580,9 @@ async def handle_watchlist_remove_pick(message: Message, state: FSMContext):
     data = await state.get_data()
     ids: list = data.get("wl_remove_ids") or []
     kind = data.get("wl_remove_kind", "tv")
-    if text.isdigit():
-        idx = int(text) - 1
+    slot = parse_watchlist_remove_slot(text)
+    if slot is not None:
+        idx = slot - 1
         if 0 <= idx < len(ids):
             rid = ids[idx]
             if kind == "tv":
