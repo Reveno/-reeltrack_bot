@@ -63,7 +63,7 @@ def detect_lang(tg_code: str | None) -> str:
 
 def tr(lang: str, key: str, **kwargs) -> str:
     template = T.get(lang, T[DEFAULT_LANG]).get(key, T[DEFAULT_LANG].get(key, key))
-    return template.format(**kwargs)
+    return template.replace("\\n", "\n").format(**kwargs)
 
 
 def all_button_texts(key: str) -> set[str]:
@@ -207,7 +207,6 @@ async def cmd_start(message: Message, state: FSMContext):
 async def cmd_help(message: Message, state: FSMContext):
     await state.clear()
     lang = await user_lang(message.from_user.id)
-    me = await bot.get_me()
     await message.answer(
         tr(
             lang,
@@ -215,7 +214,6 @@ async def cmd_help(message: Message, state: FSMContext):
             btn_search=tr(lang, "btn_search"),
             btn_list=tr(lang, "btn_list"),
             btn_track=tr(lang, "btn_track"),
-            bot_username=me.username,
         ),
         parse_mode="HTML",
         reply_markup=main_reply_keyboard(lang),
