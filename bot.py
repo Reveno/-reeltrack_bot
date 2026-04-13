@@ -389,7 +389,7 @@ async def render_watchlist(message: Message, lang: str, state: FSMContext):
         return
 
     await state.set_state(BotStates.watchlist_pick)
-    await message.answer(tr(lang, "watchlist_choose_kind"), reply_markup=watchlist_pick_reply_keyboard(lang))
+    await message.answer(tr(lang, "watchlist_choose_kind"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang))
 
 
 async def open_media_detail(message: Message, state: FSMContext, lang: str, media: str, tmdb_id: int):
@@ -565,7 +565,7 @@ async def handle_watchlist_remove_pick(message: Message, state: FSMContext):
         return
     if text in BTN_WATCHLIST_CATEGORIES_SET:
         await state.set_state(BotStates.watchlist_pick)
-        await message.answer(tr(lang, "watchlist_choose_kind"), reply_markup=watchlist_pick_reply_keyboard(lang))
+        await message.answer(tr(lang, "watchlist_choose_kind"), parse_mode="HTML", reply_markup=watchlist_pick_reply_keyboard(lang))
         return
     data = await state.get_data()
     ids: list = data.get("wl_remove_ids") or []
