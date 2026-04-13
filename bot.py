@@ -7,6 +7,7 @@ import html
 import re
 import json
 import logging
+import unicodedata
 import os
 from datetime import date
 from pathlib import Path
@@ -95,11 +96,30 @@ BTN_LANG_SET = all_button_texts("btn_language")
 BTN_CANCEL_SET = all_button_texts("btn_cancel")
 BTN_WATCHLIST_SERIES_SET = all_button_texts("btn_watchlist_series")
 BTN_WATCHLIST_MOVIES_SET = all_button_texts("btn_watchlist_movies")
-BTN_BACK_TO_MENU_SET = all_button_texts("btn_back_to_menu")
 BTN_WATCHLIST_CATEGORIES_SET = all_button_texts("btn_watchlist_categories")
 BTN_TRACK_SET = all_button_texts("btn_track")
 BTN_TRACK_MOVIE_SET = all_button_texts("btn_track_movie")
 BTN_NEW_SEARCH_SET = all_button_texts("btn_new_search")
+
+
+def normalize_reply_button_text(s: str) -> str:
+    t = unicodedata.normalize("NFKC", (s or "").strip())
+    return t.replace("\ufe0f", "").replace("\ufe0e", "")
+
+
+_NORM_BACK_MENU_TEXTS = frozenset(
+    normalize_reply_button_text(tr(lang, "btn_back_to_menu")) for lang in SUPPORTED_LANGS
+)
+
+
+def is_back_to_menu_text(text: str) -> bool:
+    nt = normalize_reply_button_text(text)
+    if nt in _NORM_BACK_MENU_TEXTS:
+        return True
+    if nt and nt[0] in "↩↪":
+        swapped = ("↩" if nt[0] == "↪" else "↪") + nt[1:]
+        return swapped in _NORM_BACK_MENU_TEXTS
+    return False
 
 
 class BotStates(StatesGroup):
@@ -127,12 +147,12 @@ def main_keyboard(lang: str) -> ReplyKeyboardMarkup:
     return b.as_markup(resize_keyboard=True)
 
 
-# Telegram requires non-empty message text; ZWSP restores main keyboard without visible wording.
-_ZWSP = "\u200b"
+# Telegram requires non-empty text; NBSP avoids visible wording (ZWSP-only can be rejected as empty).
+_KB_PLACEHOLDER = "\u00a0"
 
 
 async def answer_main_keyboard(message: Message, lang: str) -> None:
-    await message.answer(_ZWSP, reply_markup=main_keyboard(lang), disable_notification=True)
+    await message.answer(_KB_PLACEHOLDER, reply_markup=main_keyboard(lang), disable_notification=True)
 
 
 def search_keyboard(lang: str) -> ReplyKeyboardMarkup:
@@ -549,7 +569,7 @@ async def handle_watchlist_pick(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     if await try_dispatch_main_menu(message, state, text, lang):
         return
-    if text in BTN_BACK_TO_MENU_SET:
+    if is_back_to_menu_text(text):
         await state.clear()
         await answer_main_keyboard(message, lang)
         return
@@ -602,7 +622,7 @@ async def handle_language_pick(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     if await try_dispatch_main_menu(message, state, text, lang):
         return
-    if text in BTN_BACK_TO_MENU_SET:
+    if is_back_to_menu_text(text):
         await state.clear()
         await answer_main_keyboard(message, lang)
         return
