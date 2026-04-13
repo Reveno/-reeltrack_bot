@@ -62,6 +62,20 @@ async def init_db():
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             );
+
+            CREATE TABLE IF NOT EXISTS movie_watchlist (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                movie_id INTEGER NOT NULL,
+                movie_title TEXT NOT NULL,
+                poster_path TEXT,
+                region TEXT NOT NULL DEFAULT 'US',
+                released_notified BOOLEAN NOT NULL DEFAULT FALSE,
+                added_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (user_id, movie_id, region)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_movie_watchlist_user ON movie_watchlist(user_id);
         """)
 
 
@@ -162,6 +176,45 @@ async def remove_from_watchlist(user_id: int, watchlist_id: int):
         )
 
 
+async def add_movie_to_watchlist(
+    user_id: int,
+    movie_id: int,
+    movie_title: str,
+    poster_path: str | None,
+    region: str,
+) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.fetchval(
+            """
+            INSERT INTO movie_watchlist (user_id, movie_id, movie_title, poster_path, region)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (user_id, movie_id, region) DO NOTHING
+            RETURNING id
+            """,
+            user_id, movie_id, movie_title, poster_path, region,
+        )
+        return result is not None
+
+
+async def is_tracking_movie(user_id: int, movie_id: int, region: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT 1 FROM movie_watchlist WHERE user_id = $1 AND movie_id = $2 AND region = $3",
+            user_id, movie_id, region,
+        ) is not None
+
+
+async def remove_movie_from_watchlist(user_id: int, watchlist_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM movie_watchlist WHERE id = $1 AND user_id = $2",
+            watchlist_id, user_id,
+        )
+
+
 async def get_watchlist(user_id: int) -> list[asyncpg.Record]:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -170,6 +223,20 @@ async def get_watchlist(user_id: int) -> list[asyncpg.Record]:
             SELECT id, series_id, series_name, poster_path,
                    season_number, total_seasons, last_notified_episode
             FROM watchlist
+            WHERE user_id = $1
+            ORDER BY added_at DESC
+            """,
+            user_id,
+        )
+
+
+async def get_movie_watchlist(user_id: int) -> list[asyncpg.Record]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT id, movie_id, movie_title, poster_path, region, released_notified
+            FROM movie_watchlist
             WHERE user_id = $1
             ORDER BY added_at DESC
             """,
@@ -203,10 +270,33 @@ async def get_all_tracked() -> list[asyncpg.Record]:
         )
 
 
+async def get_all_tracked_movies() -> list[asyncpg.Record]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT mw.id, mw.user_id, mw.movie_id, mw.movie_title, mw.poster_path, mw.region, mw.released_notified,
+                   COALESCE(us.language, 'uk') AS language
+            FROM movie_watchlist mw
+            LEFT JOIN user_settings us ON us.user_id = mw.user_id
+            ORDER BY mw.movie_id, mw.region
+            """
+        )
+
+
 async def update_notified_episode(watchlist_id: int, episode_number: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE watchlist SET last_notified_episode = $1 WHERE id = $2",
             episode_number, watchlist_id,
+        )
+
+
+async def mark_movie_released_notified(watchlist_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE movie_watchlist SET released_notified = TRUE WHERE id = $1",
+            watchlist_id,
         )
