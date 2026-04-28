@@ -84,7 +84,7 @@ if not _bot_token:
 bot = Bot(token=_bot_token)
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
-CHECK_INTERVAL_MINUTES = max(5, int(os.getenv("CHECK_INTERVAL_MINUTES") or "15"))
+CHECK_INTERVAL_MINUTES = max(5, int(os.getenv("CHECK_INTERVAL_MINUTES") or "60"))
 PLACEHOLDER_POSTER = "https://placehold.co/500x750/1a1a2e/ffffff?text=No+Poster"
 TMDB_TITLE_CONCURRENCY = 4
 _tmdb_title_sem = asyncio.Semaphore(TMDB_TITLE_CONCURRENCY)
